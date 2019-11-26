@@ -1,0 +1,14 @@
+{
+  "server_ip": "192.168.1.7",
+  "port": 1883,
+  "client_name": "office_video_webcam",
+  "topic_publish": "cameras/office/webcam",
+  "topic_control": "cameras/office/webcam",
+  "camera_number": 0,
+  "camera_height": 640,
+  "camera_width": 480,
+	"camera_warmup_time": 2.5,
+  "camera_fps": 16,
+  "lux_level": 0.6,
+  "contour": 900
+}
