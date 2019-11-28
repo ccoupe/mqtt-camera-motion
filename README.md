@@ -1,10 +1,120 @@
-## Video motion detection for Linux and MQTT. 
+# Video motion detection for Linux and MQTT. 
   Uses python, USB webcams or Raspberry pi cameras.
 
-### Summary
+## Summary
 This program reads from a USB wecam or Raspberry's camera and when it detects
 movement it will send 'active' or 'inactive' to a MQTT topic.  There
-is a matching Hubitat driver.
+is a matching Hubitat driver you'll want to use.
+
+It also reports a 'lux' level to MQTT. Do not confuse this with other 'lux's. Generally
+speaking a low number means less light. This program attempt to detect step changes
+in lux so that turning the lights off in the room with the camera does NOT cause and
+'active' message to be sent. Attempts to do that. You may have to do that in the Hubitat rule.
+
+There are a large number of setting you can tweak. Some are from the configuation
+file and some via the Hubitat driver and MQTT. Most of these are for performance improvment
+
+## Installation
+
+```
+git clone https://github.com/ccoupe/mqtt-camera-motion.git
+cd mqtt-camera-motion
+```
+
+Note: You can not share the camera with this program. When it's running you
+can't use MotionEye (moditiond) or Cheese or Skype, for example. You might be
+might be able to use the microphone on a USb Webcam. Maybe.
+
+### Find your Video device
+```
+ls -ld /dev/vidoe*
+```
+For more detail
+```
+v4l2-ctl --all
+```
+#### python3 installation
+With any luck at all, you'll have python3 installed - check by
+`python --version` or `python3 --version`
+
+You need some python packages.
+```
+sudo pip install numpy
+sudo pip install paho-mqtt
+```
+#### opencv installation
+Opencv provides the libraries for image manipulation. I use version 4.1.2 which
+is a real pain to install from source, especially on a Raspberry. 
+
+For Raspberry Pi's [https://solarianprogrammer.com/2019/09/17/install-opencv-raspberry-pi-raspbian-cpp-python-development/](follow these instructions)
+
+Ubutu linux has opencv 3 in its repo but we want 4 (4.1.2+) so it's build from source.
+
+INSERT configuration here
+
+### Manual Configuration.
+Try it manually to see how well it works for you and to get your configuation
+workable before doing a system install. Create a json file. For example:
+
+INSERT pi.json
+
+We get to the parameters later but the important one at this point is the
+camera_number. Enter 0 to use /dev/video0, 1 for /dev/video1, etc. 
+Sometimes, -1 works better than 0. Sometimes.
+
+### System Install
+
+We use the systemd facility. 
+
+Create a directory for the configuration file. I'll use /usr/local/etc/mqtt-camera
+Copy your working json file.
+```
+sudo mkdir -p /usr/local/etc/mqtt-camera
+sudo cp pi.json /usr/local/etc/mqtt-camera
+```
+
+Create a directory for the python code. I'll use /usr/local/lib/mqtt-camera
+
+```
+sudo cp mqtt-vision.py /usr/local/lib/mqtt-camera
+```
+You need to modify mqttcamera.service so systemd can manage the camera for booting and
+other system events. For example:
+
+```
+[Unit]
+Description=MQTT Camera
+
+[Service]
+ExecStart=/usr/local/bin/mqtt-camera -c /usr/local/etc/mqtt-camera/pi.conf
+Restart=on-abort
+
+[Install]
+WantedBy=multi-user.target
+```
+Then you copy the service file to systemd's location and start the server.
+```
+sudo cp mqttcamera.service /etc/system/systemd
+sudo systemctl enable mqttcamera
+sudo systemctl start mqttcamera
+```
+That should get it running now and for every reboot. If you want to disable it
+to fix it or use the camera for another application `sudo systemctl disable mqttcamera`
+mqttcamera will log to /var/log/mqttcamera.
+
+### Install an MQTT server.
+If you don't have one, `mosquitto` is easy to install.  It's almost mandatory to assign
+a fixed IP address for the system running your MQTT server using your router configuration
+software.
+
+You really want a fixed IP address and you want a machine that will reboot on powerfail. A pi3 is
+enough to run MQTT and the camera if you want.
+
+TODO: Instuctions here.
+
+### Algorithm Performance
+
+### Computer Performance
 
 ### Why
 I was playing around with motion sensors like the Samsung SmartThings and the

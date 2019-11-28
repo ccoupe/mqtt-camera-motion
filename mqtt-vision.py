@@ -5,100 +5,149 @@ import sys
 import json
 import argparse
 import warnings
-import datetime,time,threading
+from datetime import datetime 
+import time,threading, sched
 
-# Defaults = can/should be overridden by json config file
-# and some can be modified via mqtt messages on control topic
-global client
-global camera_number, camera_width, camera_width, camera_warmup,camera_fps
-global mqtt_client_name, mqtt_port, mqtt_server, mqtt_ctl_topic
-mqtt_server = "192.168.1.7"
-mqtt_port = 1883
-mqtt_client_name = "office_detection_1"
-mqtt_pub_topic = "cameras/office/webcam"
-mqtt_ctl_topic = "cameras/office/webcam"
-camera_number = -1     # Linux: /dev/video0 is our number 0. See '$ v4l2-ctl --all'
-camera_width = 400 #320
-camera_height = 400 #200
-camera_fps = 15
-camera_warmup = 2.5
-luxlevel = 0.6
+# may variable can be overridden by json config file
+# and some can be modified via mqtt messages on the control topic
+# 
 
-enable = True
-# below are settable parameters from mqtt messages to us
-contour_limit = 900
-last_out = False        # False => inactive
-frame_skip = 5      # number of frames between checks. depends on source hw
-inactive_secs = 2  # number of seconds to delay until inactive sent
-timer_active = False
+mqtt_server = "192.168.1.7"   # From json
+mqtt_port = 1883              # From json
+mqtt_client_name = "office_detection_1"   # From json
+mqtt_pub_topic = "cameras/office/webcam"  # From json
+mqtt_ctl_topic = "cameras/office/webcam"  # From json
+# in Linux /dev/video<n> matches opencv device (n) See '$ v4l2-ctl --all' ?
+camera_number = -1        # From json
+camera_width = 400 #320   # From json
+camera_height = 400 #200  # From json
+camera_fps = 15           # From json
+camera_warmup = 2.5       # From json
+luxlevel = 0.6            # From json & mqtt
+curlux = 0
+lux_secs = 60             # From json & mqtt
+enable = True             # From mqtt
+contour_limit = 900       # From json & mqtt
+
+frame_skip = 10       # number of frames between checks. From json & mqtt
+active_hold = 10      # number of ticks to hold 'active' state. From json & mqtt
+tick_len = 5          # number of seconds per tick. From json & mqtt
+
+# state machine enums (cheap enums)
+# signals:
+MOTION = 1
+NO_MOTION = 0
+FIRED = 2
+# states
+WAITING = 0
+ACTIVE_ACC = 1
+INACT_ACC = 2
+
+# start machine internal variables
+state = WAITING
+motion_cnt = 0
+no_motion_cnt = 0
 timer_thread = None
-active_warmup = 0
+active_ticks = 0
 
 # some debugging and stats variables
-show_windows = True;		# -d on the command line
-global luxcnt, luxsum
+loglevel = 0          # From command line
+show_windows = False;		# -d on the command line for true
 luxcnt = 1
 luxsum = 0.0
+curlux = 0
 
-def print_lux(msg):
-  global luxcnt, luxsum
-  tstr = datetime.datetime.now().strftime("%H:%M:%S")
-  print (tstr, msg, luxsum/luxcnt)
+def log(msg, level=2):
+  global luxcnt, luxsum, curlux, loglevel
+  (dt, micro) = datetime.now().strftime('%H:%M:%S.%f').split('.')
+  dt = "%s.%03d" % (dt, int(micro) / 1000)
+  #tstr = datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]
+  print ("%-14.14s%-20.20s%3d %- 5.2f" % (dt, msg, curlux, luxsum/luxcnt))
   
-def inactive_timer():
-  global client, mqtt_pub_topic, last_out
-  last_out = False
-  client.publish(mqtt_pub_topic,"inactive")
-  print_lux("inactive")
+# 
+def one_sec_timer():
+  state_machine(FIRED)    # async? is it thread safe? maybe?
   return
+  
+def lux_timer():
+  global client, pub_topic, curlux, lux_thread, lux_secs
+  msg = "lux=%d" %(curlux)
+  client.publish(mqtt_pub_topic,msg)
+  log(msg)
+  lux_thread = threading.Timer(lux_secs, lux_timer)
+  lux_thread.start()
+  
+  
+def send_mqtt(str):
+  global client, pub_topic, curlux
+  lstr = ",lux=%d" % (curlux)
+  msg = str + lstr
+  client.publish(mqtt_pub_topic,msg)
+  log(msg)
 
-def send_state(state):
-  global last_out, inactive_secs, client, pub_topic, active_warmup
-  global timer_active, timer_thread
-  if state == True:
-    if last_out:
-      return
-    else:
-      # we may want several "frames" of "action" before we send the active
-      active_warmup += 1
-      if active_warmup > 3:
-        client.publish(mqtt_pub_topic,"active")
-        print_lux("active  ")
-        last_out = True
-        active_warmup = 0
-  else:
-    if not last_out:
-      return
-    else:
-      # was active, going inactive in inactive_secs
-      if timer_active:
-        # new activity before timer fires, cancel it.
-        timer_thread.cancel() 
-        time.sleep(0.01)
-      # start timer
-      timer_thread = threading.Timer(inactive_secs, inactive_timer)
-      timer_active = True
+def state_machine(signal):
+  global motion_cnt, no_motion_cnt, active_ticks, active_hold, tick_len
+  global timer_thread, state
+  if state == WAITING:
+    if signal == MOTION:
+      motion_cnt = no_motion_cnt = 0
+      active_ticks = active_hold
+      send_mqtt("active")
+      state = ACTIVE_ACC
+    elif signal == NO_MOTION:
+      state = WAITING
+    elif signal == FIRED:
+      timer_thread = threading.Timer(tick_len, one_sec_timer)
       timer_thread.start()
+      state = WAITING
+      
+  elif state == ACTIVE_ACC:
+    if signal == MOTION:
+      motion_cnt += 1
+      state = ACTIVE_ACC
+    elif signal == NO_MOTION:
+      no_motion_cnt += 1
+      state = ACTIVE_ACC
+    elif signal == FIRED:
+      active_ticks -= 1
+      if active_ticks <= 0:
+        # Timed out
+        if (motion_cnt / (motion_cnt + no_motion_cnt)) > 0.10:   
+          active_ticks = active_hold
+          state = ACTIVE_ACC
+          log("retrigger %02.2f" % (motion_cnt / (motion_cnt + no_motion_cnt)))
+          motion_cnt = no_motion_cnt = 0
+          state = ACTIVE_ACC
+        else:
+          send_mqtt("inactive")
+          state = WAITING
+      timer_thread = threading.Timer(tick_len, one_sec_timer)
+      timer_thread.start()
+    else:
+      print("Unknown signal in state ACTIVE_ACC")
+  else:
+    print("Unknow State")
+    
 
 def lux_calc(frame):
-    global luxcnt, luxsum, luxlevel
+    global luxcnt, luxsum, luxlevel, curlux
     frmgray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    lux = np.mean(frmgray)
+    curlux = np.mean(frmgray)
     dropped = False
-    # check for lights out situation, low lux => less light
-    if lux  < ((luxsum / luxcnt) * luxlevel):
-      tstr = datetime.datetime.now().strftime("%H:%M:%S")
-      print(tstr, lux, "trigging lights out, resetting from", luxsum / luxcnt)
-      luxsum = lux
+    # check for lights out situation
+    if curlux  < ((luxsum / luxcnt) * luxlevel):
+      log("lux step: %d" % curlux)
+      luxsum = curlux
       luxcnt = 1
       dropped = True
     else:
-      luxsum = luxsum + lux
+      luxsum = luxsum + curlux
       luxcnt = luxcnt + 1
     return dropped
 
 def find_movement(debug):
     global frame1, frame2, frame_skip, contour_limit, lights_out
+    motion = NO_MOTION
     drop = lux_calc(frame1)
     # if the light went out, don't try to detect motion
     if not drop:
@@ -108,14 +157,13 @@ def find_movement(debug):
       _, thresh = cv2.threshold(blur, 20, 255, cv2.THRESH_BINARY)
       dilated = cv2.dilate(thresh, None, iterations=3)
       contours, _ = cv2.findContours(dilated, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-      motion = False
       for contour in contours:
           (x, y, w, h) = cv2.boundingRect(contour)
           
           if cv2.contourArea(contour) < contour_limit:
               continue
-          motion = True
-          send_state(motion)
+          motion = MOTION
+          state_machine(motion)
           if debug:
             cv2.rectangle(frame1, (x, y), (x+w, y+h), (0, 255, 0), 2)
             cv2.putText(frame1, "Status: {}".format('Movement'), (10, 20), cv2.FONT_HERSHEY_SIMPLEX,
@@ -124,17 +172,17 @@ def find_movement(debug):
       if debug:
         cv2.drawContours(frame1, contours, -1, (0, 255, 0), 2)
         cv2.imshow("feed", frame1)
-      if not motion:
-        send_state(False)
+      if motion == NO_MOTION:
+        state_machine(NO_MOTION)
     frame1 = frame2
     time.sleep((1.0/30.0) * frame_skip)
     ret, frame2 = cap.read()
-    return motion
+    return motion == MOTION
     
 def on_message(client, userdata, message):
     global enable
     payload = str(message.payload.decode("utf-8"))
-    print("message received ", payload)
+    #print("message received ", payload)
     if payload == "active" or payload == "inactive":
       # send to ourself, ignore
       return
@@ -186,6 +234,7 @@ def on_message(client, userdata, message):
 def init_prog():
   global client, camera_number, camera_width, camera_width, camera_warmup,camera_fps
   global mqtt_client_name, mqtt_port, mqtt_server, mqtt_ctl_topic
+  global timer_thread, tick_len, lux_thread, lux_secs
   # For Linux: /dev/video0 is device 0 (pi builtin eg: or first usb webcam)
   time.sleep(camera_warmup)
   client = mqtt.Client(mqtt_client_name, mqtt_port)
@@ -193,17 +242,22 @@ def init_prog():
   client.subscribe(mqtt_ctl_topic)
   client.on_message = on_message
   client.loop_start()
+  timer_thread = threading.Timer(tick_len, one_sec_timer)
+  timer_thread.start()
+  lux_thread = threading.Timer(lux_secs, lux_timer)
+  lux_thread.start()
   return cap
 
 
 def cleanup(do_windows):
-  global client, cap, luxcnt, luxsum
+  global client, cap, luxcnt, luxsum, timer_thread
   if show_windows:
     cv2.destroyAllWindows()
   cap.release()
   client.loop_stop()
   if show_windows:
     print("average of lux mean ", luxsum/luxcnt)
+  timer_thread.cancel()
   return
 
 def load_conf(fn):
@@ -232,6 +286,8 @@ def load_conf(fn):
     camera_number = conf["camera_number"]
   if conf["lux_level"]:
     luxlevel = conf["lux_level"]
+  if conf["contour"]:
+    contour_limit = conf["contour"]
   
 
 # Start here
@@ -254,6 +310,7 @@ if sys.argv[1] == "-d":
   show_windows = True
   load_conf(sys.argv[2])
 else:
+  show_windows = False
   load_conf(sys.argv[1])
   
 global frame1, frame2, cap

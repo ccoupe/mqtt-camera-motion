@@ -7,7 +7,7 @@
   "camera_number": 0,
   "camera_height": 640,
   "camera_width": 480,
-	"camera_warmup_time": 2.5,
+  "camera_warmup_time": 2.5,
   "camera_fps": 16,
   "lux_level": 0.6,
   "contour": 900

@@ -1,0 +1,9 @@
+[Unit]
+Description=MQTT Camera
+
+[Service]
+ExecStart=/usr/local/bin/mqtt-camera -c /usr/local/etc/mqtt-camera/pi.conf
+Restart=on-abort
+
+[Install]
+WantedBy=multi-user.target
