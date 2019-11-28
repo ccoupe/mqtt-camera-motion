@@ -19,7 +19,7 @@ There isn't one for my code.
 
 ## Support
 The best way to contact me about problems, suggestions, wishes and fixes
-is to file an (https://github.com/ccoupe/mqtt-camera-motion/issues)[issue at the github repo.]
+is to file an [https://github.com/ccoupe/mqtt-camera-motion/issues](issue at the github repo.)
 Membership is free. If it crashed, a backtrace dump is
 really, really useful as are error messages from the Hubitat log if that
 is where the problem shows up.
