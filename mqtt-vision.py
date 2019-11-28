@@ -24,11 +24,9 @@ camera_height = 400 #200  # From json
 camera_fps = 15           # From json
 camera_warmup = 2.5       # From json
 luxlevel = 0.6            # From json & mqtt
-curlux = 0
 lux_secs = 60             # From json & mqtt
 enable = True             # From mqtt
 contour_limit = 900       # From json & mqtt
-
 frame_skip = 10       # number of frames between checks. From json & mqtt
 active_hold = 10      # number of ticks to hold 'active' state. From json & mqtt
 tick_len = 5          # number of seconds per tick. From json & mqtt
@@ -52,7 +50,7 @@ active_ticks = 0
 
 # some debugging and stats variables
 loglevel = 0          # From command line
-show_windows = False;		# -d on the command line for true
+show_windows = False;		# -d on the command line for True
 luxcnt = 1
 luxsum = 0.0
 curlux = 0

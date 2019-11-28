@@ -4,7 +4,8 @@
 ## Purpose
 This program reads from a USB wecam or Raspberry's camera and when it detects
 movement it will send 'active' or 'inactive' to a MQTT topic.  There
-is a matching Hubitat driver you'll want to use.
+is a matching Hubitat driver you'll want to use. It's extremely sensitve
+to small movements which a PIR or Microwave sensor wouldn't trigger.
 
 It also reports a 'lux' level to MQTT. Do not confuse this with other 'lux's. Generally
 speaking a low number means less light. This program attempt to detect step changes
@@ -40,7 +41,7 @@ might be able to use the microphone on a USb Webcam. Maybe.
 
 ### Find your Video device
 ```
-ls -ld /dev/vidoe*
+ls -ld /dev/video*
 ```
 For more detail
 ```
@@ -57,23 +58,51 @@ sudo pip install paho-mqtt
 ```
 #### opencv installation
 Opencv provides the libraries for image manipulation. I use version 4.1.2 which
-is a real pain to install from source, especially on a Raspberry. 
+is a real pain to install from source, especially on a Raspberry (takes a few hours)
+On a Pi Zero it takes a day and a half or more to build from source and it's a bit iffy.
+You really want to use the following link instead
 
 For Raspberry Pi's (https://solarianprogrammer.com/2019/09/17/install-opencv-raspberry-pi-raspbian-cpp-python-development/)[(follow these instructions]
 
-Ubutu linux has opencv 3 in its repo but we want 4 (4.1.2+) so it's build from source.
+Ubuntu linux has opencv version 3.x in its repo but we want 4.x (4.1.2+) so we have to build from source.
+It's not difficult once you have a working configuration. It does take some time
 
 INSERT configuration here
 
 ### Manual Configuration.
 Try it manually to see how well it works for you and to get your configuation
-workable before doing a system install. Create a json file. For example:
-
-INSERT pi.json
-
-We get to the parameters later but the important one at this point is the
+workable before doing a system install. Create a json file. For example here is
+a bronco.json. 'bronco is the computer name but it should probably be office-webcam.json
+to better reflect where and what it is.
+```
+{
+  "server_ip": "192.168.1.7",
+  "port": 1883,
+  "client_name": "office_video_webcam",
+  "topic_publish": "cameras/office/webcam",
+  "topic_control": "cameras/office/webcam",
+  "camera_number": 0,
+  "camera_height": 640,
+  "camera_width": 480,
+  "camera_warmup_time": 2.5,
+  "camera_fps": 16,
+  "lux_level": 0.6,
+  "contour_limit": 900,
+  "active_hold": 10,
+  "tick_size": 5
+}
+```
+We'll get to the parameters later but the important one at this point is the
 camera_number. Enter 0 to use /dev/video0, 1 for /dev/video1, etc. 
 Sometimes, -1 works better than 0. Sometimes.
+
+Run the script from the terminal and see what you get. 
+```
+python3 mqtt-vision.py -d -c pi.json
+```
+the -d mean debug. -d only works from a terminal launch because it puts
+up a window for the camera frames and draws detection rectangles on it. you need
+the visual to tune things for the best performance. 
 
 ### System Install
 
@@ -130,9 +159,49 @@ TODO: Instuctions here.
 
 TODO:
 
-### Algorithm Performance
+### Performance Tuning
 
-### Computer Performance
+The code uses a fairly simple algo to find motion but it does take time and
+computer cycles. With bad tuning it can run %200+ utilization of a Intel I7 (i.e.
+two cores/threads . That's too much (IMO) and impossible for a 
+Pi Zero. Pi 3 ? - maybe, maybe not. 
+
+The first thing to do is reduce the frame size. Just large enough to capture the 
+detail you want to detect. Since I only want to detect me, sitting at a desk and barely
+moving that's were I aim the camera. I can get by with 400 x 400. Use the smallest frame
+that works for you.
+
+Fortunately we don't need 30fps full speed video. In my webcam config I have
+`"frame_skip": 10,` which means read a frame, sleep for 10 frames, read a frame and compare.
+That works out to have latency of detection of 1/3 second. Of course, if your machine
+can't keep up with 30fps then you're already dropping frames. On a Raspberry PI it might be
+a much lower value because it can't keep up as it is.
+
+The current algo uses a 'contour size' to find the points of interest for determining
+movement. The comparsion is `contourArea < contour_limit` triggers a possible `active`. My
+webcam, 3 feet from me uses a `"contour_limit": 900,` 
+Your mileage may vary. 700 wasn't good enough for me. 
+
+`"active_hold": 10,` means we'll wait at least 10 `ticks` after sending an `active` to the
+MQTT topic (Hubitat driver) before we think about issue an `inactive`. In combination with 
+`"tick_size": 5,` will give a 50 second hold time.  `tick_size` is in seconds. It also
+controls how often the code checks to see if there was motion during the `tick` and we can
+delay the `inactive` by another 
+
+`"lux_level": 0.60,` is the percentage, in decimal for the lux level to drop in order to
+NOT trigger an active when the lights go out. This is kind of big deal. If we have a Hubitat
+rule the turns the light off when motion goes inactive then detector would see that two frames
+are not alike, by a lot of pixels and send an 'active' which would turn the lights back on.
+This is not theorical- simpler detectors would do this and its really annoying. The current code for lux step changes may not work. I don't actually 
+need it because the algo doesn't seem to be sensitive to that problem AND since we don't check frames
+that often there plenty of time. If the lights were dimmed over 20 seconds? I don't know, I don't have
+a smart dimmer switch. NOTE: This lux step change code doesn't work, yet.  FWIW at 60% it also gets triggered
+ when the monitor screen saver goes black in an otherwise dark room.
+ 
+The hubitat driver also has some of these settings you can fine tune the settings
+from a web browser. You still have to update the configuration json with any changes or you'll
+lose them at the next boot. 
+
 
 ## Backstory
 I was playing around with motion sensors like the Samsung SmartThings and the
