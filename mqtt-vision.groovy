@@ -18,6 +18,8 @@
    *  1.0.0 - Initial release
    */
 
+import groovy.json.JsonSlurper 
+
 metadata {
   definition (name: "MQTT Camera Detector", namespace: "ccoupe", 
       author: "Cecil Coupe", 
@@ -26,26 +28,49 @@ metadata {
     capability "Initialize"
     capability "MotionSensor"
     capability "IlluminanceMeasurement"
+    capability "Configuration"
+    capability "Refresh"
     
     command "enable"
     command "disable"
-    command "delay", ["Number"]
-        
+    command "configuration"
+       
     attribute "motion", "string"
     attribute "motion","ENUM",["active","inactive"]
     attribute "lux", "number"
-    attribute "timeout", "number"
   }
 
   preferences {
     input name: "MQTTBroker", type: "text", title: "MQTT Broker Address:", required: true, displayDuringSetup: true
     input name: "username", type: "text", title: "MQTT Username:", description: "(blank if none)", required: false, displayDuringSetup: true
     input name: "password", type: "password", title: "MQTT Password:", description: "(blank if none)", required: false, displayDuringSetup: true
-    input name: "topicSub", type: "text", title: "Topic to Subscribe:", description: "Example Topic (topic/device/#)", required: false, displayDuringSetup: true
-    input name: "QOS", type: "text", title: "QOS Value:", required: false, defaultValue: "1", displayDuringSetup: true
-    input name: "retained", type: "bool", title: "Retain message:", required: false, defaultValue: false, displayDuringSetup: true
+    input name: "topicSub", type: "text", title: "Topic to Subscribe:", 
+        description: "Example Topic (office/cameras/camera1). Please don't use a #", 
+        required: false, displayDuringSetup: true
+    input name: "topicPub", type: "text", title: "Topic to Publish:",
+        description: "Example Topic (office/cameras/camera1_control)", 
+        required: false, displayDuringSetup: true
+    input name: "QOS", type: "text", title: "QOS Value:", required: false, 
+        defaultValue: "1", displayDuringSetup: true
+    input name: "retained", type: "bool", title: "Retain message:", required:false,
+        defaultValue: false, displayDuringSetup: true
+    input name: "frame_skip", type: "number", title: "Frames to Skip",
+        required: false, displayDuringSetup: true, defaultValue: 10,
+        description: "Number of frames to skip"
+    input name: "tick_len", type: "number", title: "Tick Length",
+        required: false, displayDuringSetup: true, defaultValue: 5,
+        description: "Number of seconds per 'tick'. Controls frequency of timers"
+    input name: "active_hold", type: "number", title: "Active Hold",
+        required: false, displayDuringSetup: true, defaultValue: 10,
+        description: "Number of 'tick's to keep motion active"
+    input name: "contour_limit", type: "number", title: "Contour Limit",
+        required: false, displayDuringSetup: true, defaultValue: 900, range: 500..1800
+        description: "Controls Contour Area size for movements. "
+    input name: "lux_level", type: "number", title: "Lux Level",
+        required: false, displayDuringSetup: true, defaultValue: 0.60, range: 0.1..1.00
+        description: "Decimal % for detection Lights Out to prevent false actives"
     input("logEnable", "bool", title: "Enable logging", required: true, defaultValue: true)
-  }
+ }
 }
 
 
@@ -58,26 +83,39 @@ def parse(String description) {
   msg = interfaces.mqtt.parseMessage(description)
   topic = msg.get('topic')
   payload = msg.get('payload')
-  if (payload.contains("active")){
+  if (payload.startsWith("active")){
       if (logEnable) log.info "mqtt ${topic} => ${payload}"
-      sendEvent(name: "motion", value: payload)
+      sendEvent(name: "motion", value: "active")
     }
-  else if (payload.contains("inactive")){
+  else if (payload.startsWith("inactive")){
       if (logEnable) log.info "mqtt ${topic} => ${payload}"
-      sendEvent(name: "motion", value: payload)
+      sendEvent(name: "motion", value: "inactive")
+  } else if (payload.startsWith("conf=")) {
+    jstr = payload[5..-1]
+    if (logEnable) log.debug "config = ${jstr}"
+    def parser = new JsonSlurper()
+    def rmconf = parser.parseText(jstr)
+    // get the values out of rmconf into the gui preferences
+    if (rmconf['frame_skip']) {
+      settings?.frame_skip = rmconf['frame_skip']
+      log.info "new skip frame value = ${settings?.frame_skip}"
+    }
   }
+  // lux=n can tag along with active,inactive to can be by itself
   if (payload.contains("lux=")) {
     p = payload.indexOf("lux=")
     lux = payload[p+4..-1].toInteger()
     if (logEnable) log.info "lux=${lux}"
     sendEvent(name: "illuminance", value: lux, unit: "lux")
-  }   
+  } 
 }
 
 
 def updated() {
   if (logEnable) log.info "Updated..."
   initialize()
+  // TODO send json struct of all preferences? 
+  
 }
 
 def uninstalled() {
@@ -96,7 +134,7 @@ def initialize() {
     pauseExecution(1000)
     log.info "Connection established"
 		if (logEnable) log.debug "Subscribed to: ${settings?.topicSub}"
-      mqttInt.subscribe(settings?.topicSub)
+    mqttInt.subscribe(settings?.topicSub)
   } catch(e) {
     if (logEnable) log.debug "Initialize error: ${e.message}"
   }
@@ -114,16 +152,17 @@ def logsOff(){
 
 // Send commands to device via MQTT
 def disable() {
-  log.debug settings?.topicSub + " disable sensor"
-  interfaces.mqtt.publish(settings?.topicSub, "disable", settings?.QOS.toInteger(), settings?.retained)
+  log.debug settings?.topicPub + " disable sensor"
+  interfaces.mqtt.publish(settings?.topicPub, "disable", settings?.QOS.toInteger(), settings?.retained)
 }
 
 def enable() {
-  log.debug settings?.topicSub + " enable sensor"
-  interfaces.mqtt.publish(settings?.topicSub, "enable", settings?.QOS.toInteger(), settings?.retained)
+  log.debug settings?.topicPub + " enable sensor"
+  interfaces.mqtt.publish(settings?.topicPub, "enable", settings?.QOS.toInteger(), settings?.retained)
 }
 
-def delay(Number s) {
-  log.debug settings?.topicSub + " set delay to " + s
-  interfaces.mqtt.publish(settings?.topicSub, "delay=${s}", settings?.QOS.toInteger(), settings?.retained)
+def configuration() {
+  log.debug settings?.topicPub + " get configuation"
+  interfaces.mqtt.publish(settings?.topicPub, "conf", settings?.QOS.toInteger(), settings?.retained)
 }
+

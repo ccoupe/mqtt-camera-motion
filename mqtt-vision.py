@@ -14,16 +14,16 @@ import time,threading, sched
 
 mqtt_server = "192.168.1.7"   # From json
 mqtt_port = 1883              # From json
-mqtt_client_name = "office_detection_1"   # From json
-mqtt_pub_topic = "cameras/office/webcam"  # From json
-mqtt_ctl_topic = "cameras/office/webcam"  # From json
+mqtt_client_name = "detection_1"   # From json
+mqtt_pub_topic = "cameras/family/webcam"  # From json
+mqtt_ctl_topic = "cameras/family/webcam+control"  # From json
 # in Linux /dev/video<n> matches opencv device (n) See '$ v4l2-ctl --all' ?
-camera_number = -1        # From json
-camera_width = 400 #320   # From json
-camera_height = 400 #200  # From json
-camera_fps = 15           # From json
-camera_warmup = 2.5       # From json
-luxlevel = 0.6            # From json & mqtt
+camera_number = 12
+camera_width = 320      # From json
+camera_height = 200     # From json
+#camera_fps = 15           # From json
+camera_warmup = 2       # From json
+lux_level = 0.6           # From json & mqtt
 lux_secs = 60             # From json & mqtt
 enable = True             # From mqtt
 contour_limit = 900       # From json & mqtt
@@ -49,26 +49,90 @@ timer_thread = None
 active_ticks = 0
 
 # some debugging and stats variables
-loglevel = 0          # From command line
-show_windows = False;		# -d on the command line for True
+debug_level = 0          # From command line
+show_windows = False		# -d on the command line for True
 luxcnt = 1
 luxsum = 0.0
 curlux = 0
 
+def print_settings():
+  global camera_number, camera_width, camera_height, camera_warmup
+  global frame_skip, lux_level, contour_limit, tick_len, active_hold
+  global mqtt_pub_topic, mqtt_ctl_topic,mqtt_client_name
+  print("==== Settings ====")
+  print("mqtt_client_name ", mqtt_client_name)
+  print("mqtt_pub_topic: ", mqtt_pub_topic)
+  print("mqtt_ctl_topic: ", mqtt_ctl_topic)
+  print("camera_number: ", camera_number)
+  print("camera_height: ", camera_height)
+  print("camera_width: ", camera_width)
+  print("camera_warmup: ", camera_warmup)
+  print(settings_serialize())
+
+def settings_serialize():
+  global frame_skip, lux_level, contour_limit, tick_len, active_hold
+  st = {}
+  st['frame_skip'] = frame_skip
+  st['lux_level'] = lux_level
+  st['contour_limit'] = contour_limit
+  st['tick_len'] = tick_len
+  st['active_hold'] = active_hold
+  str = json.dumps(st)
+  return str
+
+def settings_deserialize(jsonstr):
+  global frame_skip, lux_level, contour_limit, tick_len, active_hold
+  st = json.loads(jsonstr)
+  if st['frame_skip']:
+    fs = st['frame_skip']
+    if fs < 0:
+      fs = 0
+    elif fs > 120:
+      fs = 120
+    frame_skip = fs
+  if st['lux_level']:
+    d = st['lux_level']
+    if d < 0.01:
+      d = 0.01
+    elif d > 0.99:
+      d = 0.99
+    lux_level = d
+  if st['contour_limit']:
+    d = st['contour_limit']
+    if d < 400:
+      d = 400
+    elif d > 1800:
+      d = 1800
+    contour_limit = d
+  if st['tick_len']:
+    d = st['tick_len']
+    if d < 1:
+      d = 1
+    elif d > 30:
+      d = 30
+    tick_len = d
+  if st['active_hold']:
+    d = st['active_hold']
+    if d < 1:
+      d = 1
+    elif d > 500:
+      d = 500
+    active_hold = d
+
 def log(msg, level=2):
-  global luxcnt, luxsum, curlux, loglevel
+  global luxcnt, luxsum, curlux, debug_level
   (dt, micro) = datetime.now().strftime('%H:%M:%S.%f').split('.')
   dt = "%s.%03d" % (dt, int(micro) / 1000)
-  #tstr = datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]
-  print ("%-14.14s%-20.20s%3d %- 5.2f" % (dt, msg, curlux, luxsum/luxcnt))
-  
-# 
+  logmsg = "%-14.14s%-20.20s%3d %- 5.2f" % (dt, msg, curlux, luxsum/luxcnt)
+  if level <= debug_level:
+    print(logmsg)
+      
 def one_sec_timer():
   state_machine(FIRED)    # async? is it thread safe? maybe?
   return
   
 def lux_timer():
-  global client, pub_topic, curlux, lux_thread, lux_secs
+  global client, mqtt_pub_topic, curlux, lux_thread, lux_secs
   msg = "lux=%d" %(curlux)
   client.publish(mqtt_pub_topic,msg)
   log(msg)
@@ -77,7 +141,7 @@ def lux_timer():
   
   
 def send_mqtt(str):
-  global client, pub_topic, curlux
+  global client, mqtt_pub_topic, curlux
   lstr = ",lux=%d" % (curlux)
   msg = str + lstr
   client.publish(mqtt_pub_topic,msg)
@@ -128,12 +192,12 @@ def state_machine(signal):
     
 
 def lux_calc(frame):
-    global luxcnt, luxsum, luxlevel, curlux
+    global luxcnt, luxsum, lux_level, curlux
     frmgray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     curlux = np.mean(frmgray)
     dropped = False
     # check for lights out situation
-    if curlux  < ((luxsum / luxcnt) * luxlevel):
+    if curlux  < ((luxsum / luxcnt) * lux_level):
       log("lux step: %d" % curlux)
       luxsum = curlux
       luxcnt = 1
@@ -144,7 +208,7 @@ def lux_calc(frame):
     return dropped
 
 def find_movement(debug):
-    global frame1, frame2, frame_skip, contour_limit, lights_out
+    global frame1, frame2, frame_skip, contour_limit
     motion = NO_MOTION
     drop = lux_calc(frame1)
     # if the light went out, don't try to detect motion
@@ -178,59 +242,39 @@ def find_movement(debug):
     return motion == MOTION
     
 def on_message(client, userdata, message):
-    global enable
+    global enable,mqtt_pub_topic
     payload = str(message.payload.decode("utf-8"))
     #print("message received ", payload)
     if payload == "active" or payload == "inactive":
-      # send to ourself, ignore
+      # sent to ourself, ignore
       return
     if payload == "enable":
       if not enable:
         enable = True
         # TODO - signal something to restart with two new frames from the camera
         # this message arrives async to the main loop
+        # start timers.
       return
     elif payload == "disable":
       if enable:
         enable = False
-        # TODO - cancel timers
+        # TODO - cancel timers.
       return
-    elif payload == "active" or payload == "inactive":
-      # just us talking to ourself (topic_pub == topic_sub)
-      retun
-    # below here, we have variable=value messages
-    flds = payload.split("=")
-    if flds.len != 2:
+    elif payload.startswith('conf='):
+      # json ahead. We change out settings.
+      js = payload[5:-1]
+      setting_deserialize(js)
       return
-    if flds[0] == "luxlevel":
-      luxi = int(flds[1])
-      if luxi > 0 and luxi < 100:
-        luxlevel = int(luxi / 100)
-    elif flds[0] == "frame_skip":
-      fs = int(flds[1])
-      if fs < 0:
-        fs = 0
-      elif fs > 120:
-        fs = 120
-      frame_skip = fs
-    elif flds[0] == "delay":
-      d = int(flds[1])
-      if d < 1:
-        d = 1
-      elif d > (15 * 60):
-        d = 15 * 60
-      inactive_secs = d
-    elif flds[0] == "contour":
-      d = int(flds[1])
-      if d < 200:
-        d = 200
-      elif d > 1500:
-        d = 1500
-      contour_limit = d
-      
+    elif payload == 'conf':
+      #  asked for our configuration
+      global mqtt_pub_topic
+      msg = "conf="+settings_serialize()
+      client.publish(mqtt_pub_topic,msg)
+      log("conf sent")
+      return
     
 def init_prog():
-  global client, camera_number, camera_width, camera_width, camera_warmup,camera_fps
+  global client, camera_warmup
   global mqtt_client_name, mqtt_port, mqtt_server, mqtt_ctl_topic
   global timer_thread, tick_len, lux_thread, lux_secs
   # For Linux: /dev/video0 is device 0 (pi builtin eg: or first usb webcam)
@@ -259,8 +303,9 @@ def cleanup(do_windows):
   return
 
 def load_conf(fn):
-  global camera_number, camera_width, camera_width, camera_warmup,camera_fps
-  global mqtt_client_name, mqtt_port, mqtt_server, mqtt_ctl_topic, luxlevel
+  global mqtt_client_name, mqtt_port, mqtt_server, mqtt_ctl_topic,mqtt_pub_topic
+  global camera_number, camera_width, camera_height, camera_warmup
+  global frame_skip, lux_level, contour_limit, tick_len, active_hold
   conf = json.load(open(fn))
   if conf["server_ip"]:
     mqtt_server = conf["server_ip"]
@@ -272,53 +317,64 @@ def load_conf(fn):
     mqtt_pub_topic = conf["topic_publish"]
   if conf["topic_control"]:
     mqtt_ctl_topic = conf["topic_control"]
+  if conf['camera_number']:
+    camera_number = conf["camera_number"]
   if conf["camera_width"]:
     camera_width = conf["camera_width"]
   if conf["camera_height"]:
     camera_height = conf["camera_height"]
-  if conf["camera_fps"]:
-    camera_fps = conf["camera_fps"]
-  if conf["camera_warmup_time"]:
-    camera_warmup = conf["camera_warmup_time"]
-  if conf["camera_number"]:
-    camera_number = conf["camera_number"]
+  if conf["frame_skip"]:
+    frame_skip = conf["frame_skip"]
+  if conf["camera_warmup"]:
+    camera_warmup = conf["camera_warmup"]
   if conf["lux_level"]:
-    luxlevel = conf["lux_level"]
-  if conf["contour"]:
-    contour_limit = conf["contour"]
-  
+    lux_level = conf["lux_level"]
+  if conf["contour_limit"]:
+    contour_limit = conf["contour_limit"]
+  if conf["tick_len"]:
+    tick_len = conf["tick_len"]
+  if conf["active_hold"]:
+    active_hold = conf["active_hold"]
 
 # Start here
 # construct the argument parser and parse the arguments
-#ap = argparse.ArgumentParser()
-#ap.add_argument("-c", "--conf", required=True,
-#	help="path to the JSON configuration file")
-#ap.add_argument("-d", 
-#  help="show windows (requires X11)")
-#args = vars(ap.parse_args())
+ap = argparse.ArgumentParser()
+ap.add_argument("-c", "--conf", required=True, type=str,
+	help="path and name of the json configuration file")
+ap.add_argument("-d", "--debug", action='store', type=int, default='3',
+  nargs='?', help="debug level, default is 3")
+ap.add_argument("-s", "--system", action = 'store', nargs='?',
+  default=False, help="use syslog")
+args = vars(ap.parse_args())
 # filter warnings, load the configuration and initialize
 #warnings.filterwarnings("ignore")
-#load_conf(args["conf"])
-argl = len(sys.argv)
-print('Argument(s) passed: {}'.format(str(sys.argv)))
-if argl <= 1 or argl > 3:
-  print("args are [-d] <conf.json>", argl)
-  exit()
-if sys.argv[1] == "-d":
-  show_windows = True
-  load_conf(sys.argv[2])
+
+load_conf(args["conf"])
+print_settings()
+
+# fix debug levels
+if args['debug'] == None:
+  debug_level = 3
 else:
-  show_windows = False
-  load_conf(sys.argv[1])
-  
-global frame1, frame2, cap
+  debug_level = args['debug']
+if args['system'] == None:
+  use_syslog = True
+  if debug_level > 2:
+    debug_level = 2
+    show_windows = False;
+    # setup syslog ?
+elif debug_level == 3:
+  show_windows = True
+print("debug_level: ", debug_level)
+#
+# Done with setup. 
 cap = cv2.VideoCapture(camera_number)
 if not  cap.isOpened():
   print("FAILED to open camera")
   exit()
 ret = cap.set(3, camera_width)
 ret = cap.set(4, camera_height)
-ret = cap.set(5, camera_fps)
+#ret = cap.set(5, camera_fps)
 init_prog()
 ret, frame1 = cap.read()
 ret, frame2 = cap.read()
@@ -328,5 +384,6 @@ while 1:
     motion = find_movement(show_windows)
     if show_windows and cv2.waitKey(40) == 27:
       break
-
+  else:
+    time.sleep(15)
 cleanup(show_windows)

@@ -85,7 +85,7 @@ to better reflect where and what it is.
   "camera_height": 640,
   "camera_width": 480,
   "camera_warmup_time": 2.5,
-  "camera_fps": 16,
+  "frame_skip": 10,
   "lux_level": 0.6,
   "contour_limit": 900,
   "active_hold": 10,
@@ -249,3 +249,7 @@ close to what I need.
 However examples do not make 'App's and in particular they do not make fancy weird device drivers. 
 That's what this project does.
 
+## Futures
+1. Web server for image download. Write the image with opencv in that directory maybe with a time step written in the image.
+2. Use a real human detection algorithm (one of the xml trained). 
+3. Possible face detection
