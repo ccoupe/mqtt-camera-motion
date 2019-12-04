@@ -21,9 +21,9 @@
 import groovy.json.JsonSlurper 
 
 metadata {
-  definition (name: "MQTT Camera Detector", namespace: "ccoupe", 
+  definition (name: "MQTT Motion Video", namespace: "ccoupe", 
       author: "Cecil Coupe", 
-      importURL: "https://raw.githubusercontent.com/ccoupe/mqtt-camera-motion/master/mqtt-vision.groovy"
+      importURL: "https://raw.githubusercontent.com/ccoupe/mqtt-camera-motion/master/mqtt-motion-video.groovy"
     ) {
     capability "Initialize"
     capability "MotionSensor"
@@ -33,7 +33,6 @@ metadata {
     
     command "enable"
     command "disable"
-    command "configuration"
        
     attribute "motion", "string"
     attribute "motion","ENUM",["active","inactive"]
@@ -161,7 +160,7 @@ def enable() {
   interfaces.mqtt.publish(settings?.topicPub, "enable", settings?.QOS.toInteger(), settings?.retained)
 }
 
-def configuration() {
+def configure() {
   log.debug settings?.topicPub + " get configuation"
   interfaces.mqtt.publish(settings?.topicPub, "conf", settings?.QOS.toInteger(), settings?.retained)
 }

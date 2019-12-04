@@ -8,7 +8,7 @@ import warnings
 from datetime import datetime 
 import time,threading, sched
 
-# may variable can be overridden by json config file
+# many variables must be overridden by json config file
 # and some can be modified via mqtt messages on the control topic
 # 
 
@@ -18,10 +18,10 @@ mqtt_client_name = "detection_1"   # From json
 mqtt_pub_topic = "cameras/family/webcam"  # From json
 mqtt_ctl_topic = "cameras/family/webcam+control"  # From json
 # in Linux /dev/video<n> matches opencv device (n) See '$ v4l2-ctl --all' ?
-camera_number = 12
+camera_number = -1      # From json -1 works best for usb webcam on ubuntu
 camera_width = 320      # From json
 camera_height = 200     # From json
-#camera_fps = 15           # From json
+#camera_fps = 15        # From json
 camera_warmup = 2       # From json
 lux_level = 0.6           # From json & mqtt
 lux_secs = 60             # From json & mqtt
@@ -210,9 +210,9 @@ def lux_calc(frame):
 def find_movement(debug):
     global frame1, frame2, frame_skip, contour_limit
     motion = NO_MOTION
-    drop = lux_calc(frame1)
+    drop1 = lux_calc(frame1)
     # if the light went out, don't try to detect motion
-    if not drop:
+    if not drop1:
       diff = cv2.absdiff(frame1, frame2)
       gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
       blur = cv2.GaussianBlur(gray, (5,5), 0)
@@ -237,8 +237,14 @@ def find_movement(debug):
       if motion == NO_MOTION:
         state_machine(NO_MOTION)
     frame1 = frame2
+    if drop1 and motion == MOTION:
+      print("drop1 found in MOTION")
     time.sleep((1.0/30.0) * frame_skip)
     ret, frame2 = cap.read()
+    drop2 = lux_calc(frame2)
+    if drop2 and motion == MOTION:
+      print("drop2 found in MOTION")
+    
     return motion == MOTION
     
 def on_message(client, userdata, message):
