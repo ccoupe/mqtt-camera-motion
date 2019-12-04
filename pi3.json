@@ -1,9 +1,9 @@
 {
   "server_ip": "192.168.1.7",
   "port": 1883,
-  "client_name": "touchpi_camera",
-  "topic_publish": "cameras/family/webcam",
-  "topic_control": "cameras/family/webcam_control",
+  "client_name": "pi3_camera",
+  "topic_publish": "cameras/office/test",
+  "topic_control": "cameras/office/test_control",
   "camera_number": -1,
   "camera_height": 640,
   "camera_width": 480,
