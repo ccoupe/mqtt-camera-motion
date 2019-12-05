@@ -8,12 +8,13 @@ is a matching Hubitat driver you'll want to use. It's extremely sensitve
 to small movements which a PIR or Microwave sensor wouldn't trigger.
 
 It also reports a 'lux' level to MQTT. Do not confuse this with other 'lux's. Generally
-speaking a low number means less light. This program attempt to detect step changes
+speaking a low number means less light. This program attempts to detect step changes
 in lux so that turning the lights off in the room with the camera does NOT cause and
-'active' message to be sent. Attempts to do that. You may have to do that in the Hubitat rule.
+'active' message to be sent. It fails to do that. You have to do that in the 
+Hubitat motion lighting rule.
 
 There are a large number of setting you can tweak. Some are from the configuation
-file and some via the Hubitat driver and MQTT. Most of these are for performance improvment
+file and some via the Hubitat driver and MQTT. Most of these are for performance improvement
 
 ## License
 There isn't one for my code. 
@@ -89,7 +90,8 @@ to better reflect where and what it is.
   "lux_level": 0.6,
   "contour_limit": 900,
   "active_hold": 10,
-  "tick_size": 5
+  "tick_size": 5,
+  "lux_secs" : 300
 }
 ```
 We'll get to the parameters later but the important one at this point is the
@@ -98,11 +100,12 @@ Sometimes, -1 works better than 0. Sometimes.
 
 Run the script from the terminal and see what you get. 
 ```
-python3 mqtt-vision.py -d -c pi.json
+python3 mqtt-vision.py -d3 -c pi.json
 ```
-the -d mean debug. -d only works from a terminal launch because it puts
+the -d mean debug. -d3 only works from a terminal launch because it puts
 up a window for the camera frames and draws detection rectangles on it. you need
-the visual to tune things for the best performance. 
+the visual to tune things for the best performance. -d2 provides more info than
+-d1 which just logs the active/inactive mqtt sends.
 
 ### System Install
 
@@ -115,10 +118,10 @@ sudo mkdir -p /usr/local/etc/mqtt-camera
 sudo cp pi.json /usr/local/etc/mqtt-camera
 ```
 
-Create a directory for the python code. I'll use /usr/local/bin
+Create a directory for the python code. I'll use /usr/local/lib and copy it.
 
 ```
-sudo cp mqtt-vision.py /usr/local/lib/mqtt-camera.py
+sudo cp mqtt-motion-video.py /usr/local/lib/
 ```
 You need to modify mqttcamera.service so systemd can manage the camera for booting and
 other system events. For example:
@@ -128,7 +131,7 @@ other system events. For example:
 Description=MQTT Camera
 
 [Service]
-ExecStart=python3 /usr/local/lib/mqtt-vision.py -c /usr/local/etc/mqtt-camera/pi.conf
+ExecStart=python3 /usr/local/lib/mqtt-camera --system -c /usr/local/etc/mqtt-camera/pi.json
 Restart=on-abort
 
 [Install]
@@ -136,7 +139,7 @@ WantedBy=multi-user.target
 ```
 Then you copy the service file to systemd's location and start the server.
 ```
-sudo cp mqttcamera.service /etc/system/systemd
+sudo cp mqttcamera.service /etc/systemd/system
 sudo systemctl enable mqttcamera
 sudo systemctl start mqttcamera
 ```

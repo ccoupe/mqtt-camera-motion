@@ -2,7 +2,7 @@
 Description=MQTT Camera
 
 [Service]
-ExecStart=/usr/local/bin/mqtt-camera -c /usr/local/etc/mqtt-camera/pi.conf
+ExecStart=python3 /usr/local/lib/mqtt-motion-video.py --system -c /usr/local/etc/mqtt-camera/touchpi.json
 Restart=on-abort
 
 [Install]

@@ -24,7 +24,7 @@ camera_height = 200     # From json
 #camera_fps = 15        # From json
 camera_warmup = 2       # From json
 lux_level = 0.6           # From json & mqtt
-lux_secs = 60*5           # TODO: From json & mqtt
+lux_secs = 60*2           # TODO: From json & mqtt
 enable = True             # From mqtt
 contour_limit = 900       # From json & mqtt
 frame_skip = 10       # number of frames between checks. From json & mqtt
@@ -62,24 +62,25 @@ def print_settings():
   global camera_number, camera_width, camera_height, camera_warmup
   global frame_skip, lux_level, contour_limit, tick_len, active_hold
   global mqtt_pub_topic, mqtt_ctl_topic,mqtt_client_name
-  print("==== Settings ====")
-  print("mqtt_client_name ", mqtt_client_name)
-  print("mqtt_pub_topic: ", mqtt_pub_topic)
-  print("mqtt_ctl_topic: ", mqtt_ctl_topic)
-  print("camera_number: ", camera_number)
-  print("camera_height: ", camera_height)
-  print("camera_width: ", camera_width)
-  print("camera_warmup: ", camera_warmup)
+  print("==== Settings ====", flush=True)
+  print("mqtt_client_name ", mqtt_client_name, flush=True)
+  print("mqtt_pub_topic: ", mqtt_pub_topic, flush=True)
+  print("mqtt_ctl_topic: ", mqtt_ctl_topic, flush=True)
+  print("camera_number: ", camera_number, flush=True)
+  print("camera_height: ", camera_height, flush=True)
+  print("camera_width: ", camera_width, flush=True)
+  print("camera_warmup: ", camera_warmup, flush=True)
   print(settings_serialize())
 
 def settings_serialize():
-  global frame_skip, lux_level, contour_limit, tick_len, active_hold
+  global frame_skip, lux_level, contour_limit, tick_len, active_hold, lux_secs
   st = {}
   st['frame_skip'] = frame_skip
   st['lux_level'] = lux_level
   st['contour_limit'] = contour_limit
   st['tick_len'] = tick_len
   st['active_hold'] = active_hold
+  st['lux_secs'] = lux_secs
   str = json.dumps(st)
   return str
 
@@ -121,6 +122,13 @@ def settings_deserialize(jsonstr):
     elif d > 500:
       d = 500
     active_hold = d
+  if st['lux_secs']:
+    d = st['lux_secs']
+    if d < 60:
+      d = 60
+    elif d > 3600:
+      d = 3600
+    lux_secs = d
 
 def log(msg, level=2):
   global luxcnt, luxsum, curlux, debug_level
@@ -129,7 +137,7 @@ def log(msg, level=2):
   (dt, micro) = datetime.now().strftime('%H:%M:%S.%f').split('.')
   dt = "%s.%03d" % (dt, int(micro) / 1000)
   logmsg = "%-14.14s%-20.20s%3d %- 5.2f" % (dt, msg, curlux, luxsum/luxcnt)
-  print(logmsg)
+  print(logmsg, flush=True)
       
 def one_sec_timer():
   global off_hack
@@ -319,7 +327,7 @@ def cleanup(do_windows):
 def load_conf(fn):
   global mqtt_client_name, mqtt_port, mqtt_server, mqtt_ctl_topic,mqtt_pub_topic
   global camera_number, camera_width, camera_height, camera_warmup
-  global frame_skip, lux_level, contour_limit, tick_len, active_hold
+  global frame_skip, lux_level, contour_limit, tick_len, active_hold, lux_secs
   conf = json.load(open(fn))
   if conf["server_ip"]:
     mqtt_server = conf["server_ip"]
@@ -349,6 +357,8 @@ def load_conf(fn):
     tick_len = conf["tick_len"]
   if conf["active_hold"]:
     active_hold = conf["active_hold"]
+  if conf['lux_secs']:
+    lux_secs = conf['lux_secs']
 
 # Start here
 # construct the argument parser and parse the arguments
@@ -378,7 +388,7 @@ if args['system'] == None:
   # setup syslog ?
 elif debug_level == 3:
   show_windows = True
-print("debug_level: ", debug_level)
+#print("debug_level: ", debug_level, flush=True)
 #
 # Done with setup. 
 cap = cv2.VideoCapture(camera_number)
