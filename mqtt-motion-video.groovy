@@ -30,7 +30,10 @@ metadata {
     capability "IlluminanceMeasurement"
     capability "Configuration"
     capability "Refresh"
+		capability "Switch"
     
+    command "off"
+    command "on"
     command "enable"
     command "disable"
        
@@ -123,7 +126,7 @@ def uninstalled() {
 }
 
 def initialize() {
-	if (logEnable) runIn(900,logsOff) // clears debugging after 900 somethings
+	//if (logEnable) runIn(900,logsOff) // clears debugging after 900 somethings
 	try {
     def mqttInt = interfaces.mqtt
     //open connection
@@ -165,3 +168,12 @@ def configure() {
   interfaces.mqtt.publish(settings?.topicPub, "conf", settings?.QOS.toInteger(), settings?.retained)
 }
 
+def off() {
+  log.debug settings?.topicPub + " additional off"
+  interfaces.mqtt.publish(settings?.topicPub, "off", settings?.QOS.toInteger(), settings?.retained)
+}
+
+def on() {
+  log.debug settings?.topicPub + " additional on"
+  interfaces.mqtt.publish(settings?.topicPub, "on", settings?.QOS.toInteger(), settings?.retained)
+}

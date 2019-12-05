@@ -24,7 +24,7 @@ camera_height = 200     # From json
 #camera_fps = 15        # From json
 camera_warmup = 2       # From json
 lux_level = 0.6           # From json & mqtt
-lux_secs = 60             # From json & mqtt
+lux_secs = 60*5           # TODO: From json & mqtt
 enable = True             # From mqtt
 contour_limit = 900       # From json & mqtt
 frame_skip = 10       # number of frames between checks. From json & mqtt
@@ -47,6 +47,9 @@ motion_cnt = 0
 no_motion_cnt = 0
 timer_thread = None
 active_ticks = 0
+frattr1 = False
+frattr2 = False
+off_hack = False
 
 # some debugging and stats variables
 debug_level = 0          # From command line
@@ -121,13 +124,17 @@ def settings_deserialize(jsonstr):
 
 def log(msg, level=2):
   global luxcnt, luxsum, curlux, debug_level
+  if level > debug_level:
+    return
   (dt, micro) = datetime.now().strftime('%H:%M:%S.%f').split('.')
   dt = "%s.%03d" % (dt, int(micro) / 1000)
   logmsg = "%-14.14s%-20.20s%3d %- 5.2f" % (dt, msg, curlux, luxsum/luxcnt)
-  if level <= debug_level:
-    print(logmsg)
+  print(logmsg)
       
 def one_sec_timer():
+  global off_hack
+  if off_hack:
+    off_hack = False;     # clear hack for lights off
   state_machine(FIRED)    # async? is it thread safe? maybe?
   return
   
@@ -135,27 +142,29 @@ def lux_timer():
   global client, mqtt_pub_topic, curlux, lux_thread, lux_secs
   msg = "lux=%d" %(curlux)
   client.publish(mqtt_pub_topic,msg)
-  log(msg)
+  log(msg, 2)
   lux_thread = threading.Timer(lux_secs, lux_timer)
   lux_thread.start()
-  
   
 def send_mqtt(str):
   global client, mqtt_pub_topic, curlux
   lstr = ",lux=%d" % (curlux)
   msg = str + lstr
   client.publish(mqtt_pub_topic,msg)
-  log(msg)
+  log(msg, 1)
 
 def state_machine(signal):
-  global motion_cnt, no_motion_cnt, active_ticks, active_hold, tick_len
-  global timer_thread, state
+  global motion_cnt, no_motion_cnt, active_ticks, active_hold, tick_len, lux_cnt
+  global timer_thread, state, off_hack
   if state == WAITING:
     if signal == MOTION:
-      motion_cnt = no_motion_cnt = 0
-      active_ticks = active_hold
-      send_mqtt("active")
-      state = ACTIVE_ACC
+      # hack ahead. Don't send active if lux_sum & cnt have been reset
+      # attempt to ignore false positives when lights go out
+      if not off_hack:
+        send_mqtt("active")
+        state = ACTIVE_ACC
+      else:
+        state = ACTIVE_ACC
     elif signal == NO_MOTION:
       state = WAITING
     elif signal == FIRED:
@@ -174,10 +183,11 @@ def state_machine(signal):
       active_ticks -= 1
       if active_ticks <= 0:
         # Timed out
-        if (motion_cnt / (motion_cnt + no_motion_cnt)) > 0.10:   
+        msum = motion_cnt + no_motion_cnt
+        if msum > 0 and (motion_cnt / msum) > 0.10:   
           active_ticks = active_hold
           state = ACTIVE_ACC
-          log("retrigger %02.2f" % (motion_cnt / (motion_cnt + no_motion_cnt)))
+          log("retrigger %02.2f" % (motion_cnt / (motion_cnt + no_motion_cnt)),2)
           motion_cnt = no_motion_cnt = 0
           state = ACTIVE_ACC
         else:
@@ -195,24 +205,23 @@ def lux_calc(frame):
     global luxcnt, luxsum, lux_level, curlux
     frmgray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     curlux = np.mean(frmgray)
-    dropped = False
+    ok = True
     # check for lights out situation
     if curlux  < ((luxsum / luxcnt) * lux_level):
-      log("lux step: %d" % curlux)
+      log("LUX STEP: %d" % curlux, 2)
       luxsum = curlux
       luxcnt = 1
-      dropped = True
+      ok = False
     else:
       luxsum = luxsum + curlux
       luxcnt = luxcnt + 1
-    return dropped
+    return ok
 
 def find_movement(debug):
-    global frame1, frame2, frame_skip, contour_limit
+    global frame1, frame2, frame_skip, contour_limit, frattr1, frattr2
     motion = NO_MOTION
-    drop1 = lux_calc(frame1)
     # if the light went out, don't try to detect motion
-    if not drop1:
+    if frattr1 and frattr2:
       diff = cv2.absdiff(frame1, frame2)
       gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
       blur = cv2.GaussianBlur(gray, (5,5), 0)
@@ -237,23 +246,22 @@ def find_movement(debug):
       if motion == NO_MOTION:
         state_machine(NO_MOTION)
     frame1 = frame2
-    if drop1 and motion == MOTION:
-      print("drop1 found in MOTION")
+    frattr1 = frattr2
     time.sleep((1.0/30.0) * frame_skip)
-    ret, frame2 = cap.read()
-    drop2 = lux_calc(frame2)
-    if drop2 and motion == MOTION:
-      print("drop2 found in MOTION")
-    
+    ret, frame2 = cap.read() 
+    frattr2 = lux_calc(frame2)   
     return motion == MOTION
     
 def on_message(client, userdata, message):
-    global enable,mqtt_pub_topic
+    global enable,mqtt_pub_topic, off_hack
     payload = str(message.payload.decode("utf-8"))
-    #print("message received ", payload)
     if payload == "active" or payload == "inactive":
       # sent to ourself, ignore
       return
+    if payload == 'off':
+      # switch went off - trigger hack to not send motion
+      log("Switch went off",1)
+      off_hack = True
     if payload == "enable":
       if not enable:
         enable = True
@@ -276,7 +284,7 @@ def on_message(client, userdata, message):
       global mqtt_pub_topic
       msg = "conf="+settings_serialize()
       client.publish(mqtt_pub_topic,msg)
-      log("conf sent")
+      log("conf sent", 2)
       return
     
 def init_prog():
@@ -365,10 +373,9 @@ else:
   debug_level = args['debug']
 if args['system'] == None:
   use_syslog = True
-  if debug_level > 2:
-    debug_level = 2
-    show_windows = False;
-    # setup syslog ?
+  debug_level =1
+  show_windows = False;
+  # setup syslog ?
 elif debug_level == 3:
   show_windows = True
 print("debug_level: ", debug_level)
@@ -383,7 +390,9 @@ ret = cap.set(4, camera_height)
 #ret = cap.set(5, camera_fps)
 init_prog()
 ret, frame1 = cap.read()
+frattr1 = lux_calc(frame1)
 ret, frame2 = cap.read()
+frattr2 = lux_calc(frame2)
 
 while 1:
   if enable == True: 
