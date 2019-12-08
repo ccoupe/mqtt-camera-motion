@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import cv2
 import numpy as np
 import paho.mqtt.client as mqtt
@@ -5,8 +6,10 @@ import sys
 import json
 import argparse
 import warnings
-from datetime import datetime 
+from datetime import datetime
 import time,threading, sched
+import socket
+from subprocess import call
 
 # many variables must be overridden by json config file
 # and some can be modified via mqtt messages on the control topic
@@ -16,7 +19,7 @@ mqtt_server = "192.168.1.7"   # From json
 mqtt_port = 1883              # From json
 mqtt_client_name = "detection_1"   # From json
 mqtt_pub_topic = "cameras/family/webcam"  # From json
-mqtt_ctl_topic = "cameras/family/webcam+control"  # From json
+mqtt_ctl_topic = "cameras/family/webcam_control"  # From json
 # in Linux /dev/video<n> matches opencv device (n) See '$ v4l2-ctl --all' ?
 camera_number = -1      # From json -1 works best for usb webcam on ubuntu
 camera_width = 320      # From json
@@ -30,7 +33,8 @@ contour_limit = 900       # From json & mqtt
 frame_skip = 10       # number of frames between checks. From json & mqtt
 active_hold = 10      # number of ticks to hold 'active' state. From json & mqtt
 tick_len = 5          # number of seconds per tick. From json & mqtt
-
+our_ip = None
+image_url = None
 # state machine enums (cheap enums)
 # signals:
 MOTION = 1
@@ -46,6 +50,7 @@ state = WAITING
 motion_cnt = 0
 no_motion_cnt = 0
 timer_thread = None
+snapshot_thread = None
 active_ticks = 0
 frattr1 = False
 frattr2 = False
@@ -57,6 +62,7 @@ show_windows = False		# -d on the command line for True
 luxcnt = 1
 luxsum = 0.0
 curlux = 0
+use_syslog = False
 
 def print_settings():
   global camera_number, camera_width, camera_height, camera_warmup
@@ -74,6 +80,7 @@ def print_settings():
 
 def settings_serialize():
   global frame_skip, lux_level, contour_limit, tick_len, active_hold, lux_secs
+  global image_url
   st = {}
   st['frame_skip'] = frame_skip
   st['lux_level'] = lux_level
@@ -81,6 +88,7 @@ def settings_serialize():
   st['tick_len'] = tick_len
   st['active_hold'] = active_hold
   st['lux_secs'] = lux_secs
+  st['image_url'] = image_url
   str = json.dumps(st)
   return str
 
@@ -131,12 +139,15 @@ def settings_deserialize(jsonstr):
     lux_secs = d
 
 def log(msg, level=2):
-  global luxcnt, luxsum, curlux, debug_level
+  global luxcnt, luxsum, curlux, debug_level, use_syslog
   if level > debug_level:
     return
-  (dt, micro) = datetime.now().strftime('%H:%M:%S.%f').split('.')
-  dt = "%s.%03d" % (dt, int(micro) / 1000)
-  logmsg = "%-14.14s%-20.20s%3d %- 5.2f" % (dt, msg, curlux, luxsum/luxcnt)
+  if use_syslog:
+    logmsg = "%-20.20s%3d %- 5.2f" % (msg, curlux, luxsum/luxcnt)
+  else:
+    (dt, micro) = datetime.now().strftime('%H:%M:%S.%f').split('.')
+    dt = "%s.%03d" % (dt, int(micro) / 1000)
+    logmsg = "%-14.14s%-20.20s%3d %- 5.2f" % (dt, msg, curlux, luxsum/luxcnt)
   print(logmsg, flush=True)
       
 def one_sec_timer():
@@ -153,6 +164,19 @@ def lux_timer():
   log(msg, 2)
   lux_thread = threading.Timer(lux_secs, lux_timer)
   lux_thread.start()
+  
+def snapshot_timer():
+  global snapshot_thread, frame1, state
+  dim = (320, 240)
+  nimg = cv2.resize(frame1, dim, interpolation = cv2.INTER_AREA) 
+  if state == ACTIVE_ACC:
+    status = cv2.imwrite('/var/www/camera/snapshot.png',nimg) 
+  else:
+    gray = cv2.cvtColor(nimg, cv2.COLOR_BGR2GRAY)
+    status = cv2.imwrite('/var/www/camera/snapshot.png',gray) 
+  snapshot_thread = threading.Timer(60, snapshot_timer)
+  snapshot_thread.start()
+  
   
 def send_mqtt(str):
   global client, mqtt_pub_topic, curlux
@@ -284,8 +308,9 @@ def on_message(client, userdata, message):
       return
     elif payload.startswith('conf='):
       # json ahead. We change out settings.
-      js = payload[5:-1]
-      setting_deserialize(js)
+      js = payload[5:]
+      settings_deserialize(js)
+      print_settings()
       return
     elif payload == 'conf':
       #  asked for our configuration
@@ -294,11 +319,13 @@ def on_message(client, userdata, message):
       client.publish(mqtt_pub_topic,msg)
       log("conf sent", 2)
       return
+    else:
+      print("unknown command ", payload)
     
 def init_prog():
   global client, camera_warmup
   global mqtt_client_name, mqtt_port, mqtt_server, mqtt_ctl_topic
-  global timer_thread, tick_len, lux_thread, lux_secs
+  global timer_thread, tick_len, lux_thread, lux_secs, snapshot_thread
   # For Linux: /dev/video0 is device 0 (pi builtin eg: or first usb webcam)
   time.sleep(camera_warmup)
   client = mqtt.Client(mqtt_client_name, mqtt_port)
@@ -310,6 +337,8 @@ def init_prog():
   timer_thread.start()
   lux_thread = threading.Timer(lux_secs, lux_timer)
   lux_thread.start()
+  snapshot_thread = threading.Timer(60, snapshot_timer)
+  snapshot_thread.start()
   return cap
 
 
@@ -359,6 +388,13 @@ def load_conf(fn):
     active_hold = conf["active_hold"]
   if conf['lux_secs']:
     lux_secs = conf['lux_secs']
+    
+def getNetworkIp():
+  s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+  s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+  s.connect(('<broadcast>', 0))
+  return s.getsockname()[0]
+
 
 # Start here
 # construct the argument parser and parse the arguments
@@ -370,11 +406,13 @@ ap.add_argument("-d", "--debug", action='store', type=int, default='3',
 ap.add_argument("-s", "--system", action = 'store', nargs='?',
   default=False, help="use syslog")
 args = vars(ap.parse_args())
-# filter warnings, load the configuration and initialize
-#warnings.filterwarnings("ignore")
 
 load_conf(args["conf"])
+our_ip = getNetworkIp()
+image_url = "http://%s:7534/camera/snapshot.png" % our_ip
 print_settings()
+#call(["python3", "-m", "http.server", "--bind", our_ip, 
+#  "--directory", "/var/www", "7534"])
 
 # fix debug levels
 if args['debug'] == None:
@@ -388,8 +426,7 @@ if args['system'] == None:
   # setup syslog ?
 elif debug_level == 3:
   show_windows = True
-#print("debug_level: ", debug_level, flush=True)
-#
+
 # Done with setup. 
 cap = cv2.VideoCapture(camera_number)
 if not  cap.isOpened():

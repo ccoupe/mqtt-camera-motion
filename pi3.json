@@ -12,5 +12,6 @@
   "lux_level": 0.50,
   "contour_limit": 900,
   "tick_len": 5,
-  "active_hold": 10
+  "active_hold": 10,
+  "lux_secs": 60
 }

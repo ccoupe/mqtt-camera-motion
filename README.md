@@ -31,7 +31,21 @@ that three lines of code.
 
 ## Installation
 
+### Install an MQTT server.
+If you don't have one, `mosquitto` is easy to install.  It's almost mandatory to assign
+a fixed IP address for the system running your MQTT server using your router configuration
+software.
+
+You really want a fixed IP address for the mqtt server and you want a machine that will reboot on powerfail.
+A pi3 is enough to run MQTT (and a camera). You shouldn't reboot the mqtt server 
+just because you think something is wrong with something else. Too many things
+will depend on the server being up. 
+```sh
+sudo apt install mosquitto
+sudo apt install mosquitto-clients
 ```
+### Get the source code 
+```sh
 git clone https://github.com/ccoupe/mqtt-camera-motion.git
 cd mqtt-camera-motion
 ```
@@ -48,14 +62,16 @@ For more detail
 ```
 v4l2-ctl --all
 ```
+`/dev/video0` is probably what you want to use.
+
 #### python3 installation
 With any luck at all, you'll have python3 installed - check by
 `python --version` or `python3 --version`
 
 You need some python packages.
 ```
-sudo pip install numpy
-sudo pip install paho-mqtt
+sudo pip3 install numpy
+sudo pip3 install paho-mqtt
 ```
 #### opencv installation
 Opencv provides the libraries for image manipulation. I use version 4.1.2 which
@@ -70,52 +86,56 @@ It's not difficult once you have a working configuration. It does take some time
 
 INSERT configuration here
 
-### Manual Configuration.
+### Motion-Video Manual Configuration.
 Try it manually to see how well it works for you and to get your configuation
 workable before doing a system install. Create a json file. For example here is
-a bronco.json. 'bronco is the computer name but it should probably be office-webcam.json
-to better reflect where and what it is.
-```
+`touchpi.json`.
+```sh
 {
   "server_ip": "192.168.1.7",
   "port": 1883,
-  "client_name": "office_video_webcam",
-  "topic_publish": "cameras/office/webcam",
-  "topic_control": "cameras/office/webcam",
-  "camera_number": 0,
+  "client_name": "touchpi_camera",
+  "topic_publish": "cameras/family/touchpi",
+  "topic_control": "cameras/family/touchpi_control",
+  "camera_number": -1,
   "camera_height": 640,
   "camera_width": 480,
-  "camera_warmup_time": 2.5,
-  "frame_skip": 10,
-  "lux_level": 0.6,
+  "camera_warmup": 2.5,
+  "frame_skip": 5,
+  "lux_level": 0.50,
   "contour_limit": 900,
+  "tick_len": 5,
   "active_hold": 10,
-  "tick_size": 5,
-  "lux_secs" : 300
+  "lux_secs": 300
 }
 ```
 We'll get to the parameters later but the important one at this point is the
 camera_number. Enter 0 to use /dev/video0, 1 for /dev/video1, etc. 
-Sometimes, -1 works better than 0. Sometimes.
+Sometimes, -1 works better than 0. It's what I use. 
+You want to edit the file to use the IP number of your MQTT server and
+pick a client name (to MQTT) and a publish topic and a control topic. You can
+modify the others later. 
 
-Run the script from the terminal and see what you get. 
+Run the script from the terminal and see what you get:
 ```
-python3 mqtt-vision.py -d3 -c pi.json
+python3 mqtt-vision.py -d3 -c touchpi.json
 ```
-the -d mean debug. -d3 only works from a terminal launch because it puts
+the -d3 mean debug. -d3 only works from a terminal launch because it puts
 up a window for the camera frames and draws detection rectangles on it. you need
-the visual to tune things for the best performance. -d2 provides more info than
+the visual to fine tune things for the best performance. -d2 provides more info than
 -d1 which just logs the active/inactive mqtt sends.
 
 ### System Install
 
-We use the systemd facility. 
+We use the systemd facility. This allows a lot chances for mis-typing. Nothing
+fatal that can't be fixed.  I'm going to use the name 'touchpi' because it's one
+of the raspberry pi's I have with a a camera and this one has a touch screen.
 
 Create a directory for the configuration file. I'll use /usr/local/etc/mqtt-camera
 Copy your working json file.
 ```
 sudo mkdir -p /usr/local/etc/mqtt-camera
-sudo cp pi.json /usr/local/etc/mqtt-camera
+sudo cp touchpi.json /usr/local/etc/mqtt-camera
 ```
 
 Create a directory for the python code. I'll use /usr/local/lib and copy it.
@@ -123,15 +143,34 @@ Create a directory for the python code. I'll use /usr/local/lib and copy it.
 ```
 sudo cp mqtt-motion-video.py /usr/local/lib/
 ```
+We want a simple webserver on 'touchpi' that can serve a snapshot image. We
+need a directory for the image. The path is hardcoded into the python scripts
+```
+sudo mkdir -p /var/www/camera
+```
+We need a launch script - `mqttcamera.sh` that starts the http server and
+the motion
+```
+#!/usr/bin/env bash
+ip=`hostname -I`
+python3 -m http.server 7534 --bind ${ip} --directory /var/www &
+/usr/local/lib/mqtt-motion-video.py --system -c /usr/local/etc/mqtt-camera/touchpi.j
+son
+```
+Change the name of the json file to fit your machine and make that script executable with a
+```
+chmod +x mqttcamera.sh
+sudo cp mqttcamera.sh /usr/local/bin
+```
 You need to modify mqttcamera.service so systemd can manage the camera for booting and
-other system events. For example:
+other system events. Call this `mqttcamera.service`
 
 ```
 [Unit]
 Description=MQTT Camera
 
 [Service]
-ExecStart=python3 /usr/local/lib/mqtt-camera --system -c /usr/local/etc/mqtt-camera/pi.json
+ExecStart=/usr/local/bin/mqttcamera.sh
 Restart=on-abort
 
 [Install]
@@ -143,24 +182,19 @@ sudo cp mqttcamera.service /etc/systemd/system
 sudo systemctl enable mqttcamera
 sudo systemctl start mqttcamera
 ```
-That should get it running now and for every reboot. If you want to disable it
-to fix it or use the camera for another application `sudo systemctl disable mqttcamera`
-mqttcamera will log to /var/log/mqttcamera. The word `backtrace` in the log would indicate
-a failure that needs fixing, ASAP. 
+That should get it running now and for every reboot. To stop it use `sudo systemctl stop mqttcamera`
+If you want to disable it from starting up at boot time then do `sudo systemctl disable mqttcamera`
 
-### Install an MQTT server.
-If you don't have one, `mosquitto` is easy to install.  It's almost mandatory to assign
-a fixed IP address for the system running your MQTT server using your router configuration
-software.
-
-You really want a fixed IP address and you want a machine that will reboot on powerfail. A pi3 is
-enough to run MQTT and the camera if you want.
-
-TODO: Instuctions here.
 
 ### Hubitat driver install
 
-TODO:
+
+The driver file is `mqtt-motion-video.groovy`. Using a web browser, load the Hubitat
+page for your local hub, Select `< > Drivers Code`. Select `New Driver` and copy/paste
+the contents of mqtt-motion-video.groovy into the browser page. Click `Save` and if there
+are no errors then go to the 'Devices' page and `Add Virtual Device`, name it and from the
+drop down `Type*` list select the `MQTT Motion Video` (it's way down at the bottom of
+the list).
 
 ### Performance Tuning
 
@@ -253,6 +287,5 @@ However examples do not make 'App's and in particular they do not make fancy wei
 That's what this project does.
 
 ## Futures
-1. Web server for image download. Write the image with opencv in that directory maybe with a time step written in the image.
-2. Use a real human detection algorithm (one of the xml trained). 
-3. Possible face detection
+1. Use a real human detection algorithm (one of the xml trained). 
+2. Possible face detection
