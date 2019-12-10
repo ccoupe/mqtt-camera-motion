@@ -42,12 +42,6 @@ metadata {
     attribute "motion", "string"
     attribute "motion","ENUM",["active","inactive"]
     attribute "lux", "number"
-    attribute "frame_skip", "number"
-    attribute "lux_level", "number"    
-    attribute "contour_limit", "number"    
-    attribute "tick_len", "number"    
-    attribute "active_hold", "number"    
-    attribute "lux_secs", "number"
     attribute "image_url", "string"
  }
 
@@ -81,7 +75,7 @@ metadata {
         required: false, displayDuringSetup: true, defaultValue: 0.60, range: 0.1..1.00
         description: "Decimal % for detection Lights Out to prevent false actives"
     input name: "lux_secs", type: "number", title: "Lux Report Interval",
-        required: false, displayDuringSetup: true, defaultValue: 300, range: 60..(60*60)
+        required: false, displayDuringSetup: true, defaultValue: 300, range: 60..3600
         description: "Number of seconds between report device's Lux"
     input("logEnable", "bool", title: "Enable logging", required: true, defaultValue: true)
  }
@@ -106,27 +100,33 @@ def parse(String description) {
       sendEvent(name: "motion", value: "inactive")
   } else if (payload.startsWith("conf=")) {
     jstr = payload[5..-1]
-    if (logEnable) log.debug "conf=${jstr}"
+    if (logEnable) log.debug "recv: conf=${jstr}"
     def parser = new JsonSlurper()
     def rmconf = parser.parseText(jstr)
     // get the values out of rmconf into the gui preferences
     if (rmconf['frame_skip']) {
-      sendEvent(name: "frame_skip", value: rmconf['frame_skip'], displayed: true);
+      device.updateSetting("frame_skip",rmconf['frame_skip'].toInteger())
+      //sendEvent(name: "frame_skip", value: rmconf['frame_skip'], displayed: true);
     }
     if (rmconf['lux_level']) {
-      sendEvent(name: "lux_level", value: rmconf['lux_level'], displayed: true);
+      device.updateSetting("lux_level",rmconf['lux_level'].toFloat())
+      //sendEvent(name: "lux_level", value: rmconf['lux_level'], displayed: true);
     }
     if (rmconf['contour_limit']) {
-      sendEvent(name: "contour_limit", value: rmconf['contour_limit'], displayed: true);
+      device.updateSetting("contour_limit",rmconf['contour_limit'].toInteger())
+      //sendEvent(name: "contour_limit", value: rmconf['contour_limit'], displayed: true);
     }
     if (rmconf['tick_len']) {
-      sendEvent(name: "tick_len", value: rmconf['tick_len'], displayed: true);
+      device.updateSetting("tick_len",rmconf['tick_len'].toInteger())
+      //sendEvent(name: "tick_len", value: rmconf['tick_len'], displayed: true);
     }
     if (rmconf['active_hold']) {
-      sendEvent(name: "active_hold", value: rmconf['active_hold'], displayed: true);
+      device.updateSetting("active_hold",rmconf['active_hold'].toInteger())
+      //sendEvent(name: "active_hold", value: rmconf['active_hold'], displayed: true);
     }
     if (rmconf['lux_secs']) {
-      sendEvent(name: "lux_secs", value: rmconf['lux_secs'], displayed: true);
+      device.updateSetting("lux_secs",rmconf['lux_secs'].toInteger())
+      //sendEvent(name: "lux_secs", value: rmconf['lux_secs'], displayed: true);
     }
     if (rmconf['image_url']) {
       sendEvent(name: "image_url", value: rmconf['image_url'], displayed: true);
@@ -144,9 +144,10 @@ def parse(String description) {
 
 def updated() {
   if (logEnable) log.info "Updated..."
-  initialize()
-  // TODO send json struct of all preferences? 
-  
+  if (interfaces.mqtt.isConnected() == false)
+    initialize()
+  // send json struct of all preferences? 
+  configure()
 }
 
 def uninstalled() {
@@ -156,6 +157,7 @@ def uninstalled() {
 
 def initialize() {
 	//if (logEnable) runIn(900,logsOff) // clears debugging after 900 somethings
+  if (logEnable) log.info "Initalize..."
 	try {
     def mqttInt = interfaces.mqtt
     //open connection
@@ -210,14 +212,14 @@ def on() {
 
 def configure() {
   def map = [:]
-  map['frame_skip'] = settings?.frame_skip.toInteger()
-  map['lux_level'] = settings?.lux_level.toFloat()
-  map['tick_len'] = settings?.tick_len.toInteger()
-  map['lux_secs'] = settings?.lux_secs.toInteger()
-  map['active_hold'] = settings?.active_hold.toInteger()
-  map['contour_limit'] = settings?.contour_limit.toInteger()
+  map['frame_skip'] = settings.frame_skip.toInteger()
+  map['lux_level'] = settings.lux_level.toFloat()
+  map['tick_len'] = settings.tick_len.toInteger()
+  map['lux_secs'] = settings.lux_secs.toInteger()
+  map['active_hold'] = settings.active_hold.toInteger()
+  map['contour_limit'] = settings.contour_limit.toInteger()
   def json = JsonOutput.toJson(map)
   interfaces.mqtt.publish(settings?.topicPub, "conf=${json}", settings?.QOS.toInteger(), settings?.retained)
-  log.debug "setting conf=${json}"
+  log.debug "send conf=${json}"
   refresh()
 }

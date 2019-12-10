@@ -94,6 +94,7 @@ def settings_serialize():
 
 def settings_deserialize(jsonstr):
   global frame_skip, lux_level, contour_limit, tick_len, active_hold
+  global lux_secs
   st = json.loads(jsonstr)
   if st['frame_skip']:
     fs = st['frame_skip']

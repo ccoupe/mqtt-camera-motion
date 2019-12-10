@@ -4,8 +4,9 @@
 ## Purpose
 This program reads from a USB wecam or Raspberry's camera and when it detects
 movement it will send 'active' or 'inactive' to a MQTT topic.  There
-is a matching Hubitat driver you'll want to use. It's extremely sensitve
-to small movements which a PIR or Microwave sensor wouldn't trigger.
+is a matching Hubitat driver you'll want to use. It's sensitve
+to movements with its field of view which a PIR or Microwave sensor may not
+trigger on.
 
 It also reports a 'lux' level to MQTT. Do not confuse this with other 'lux's. Generally
 speaking a low number means less light. This program attempts to detect step changes
@@ -27,14 +28,14 @@ really, really useful as are error messages from the Hubitat log if that
 is where the problem shows up.
 
 To contribute fixes, a git hub pull request is the best method for anything longer 
-that three lines of code.
+than three lines of code.
 
 ## Installation
 
 ### Install an MQTT server.
-If you don't have one, `mosquitto` is easy to install.  It's almost mandatory to assign
-a fixed IP address for the system running your MQTT server using your router configuration
-software.
+If you don't have one, `mosquitto` is easy to install.  It is mandatory to assign
+a fixed IP address for the system running your MQTT server. Use your router configuration
+software. Mine is 192.168.1.7 - yours will probably be different.
 
 You really want a fixed IP address for the mqtt server and you want a machine that will reboot on powerfail.
 A pi3 is enough to run MQTT (and a camera). You shouldn't reboot the mqtt server 
@@ -84,7 +85,7 @@ For Raspberry Pi's (https://solarianprogrammer.com/2019/09/17/install-opencv-ras
 Ubuntu linux has opencv version 3.x in its repo but we want 4.x (4.1.2+) so we have to build from source.
 It's not difficult once you have a working configuration. It does take some time
 
-INSERT configuration here
+TODO: INSERT configuration here
 
 ### Motion-Video Manual Configuration.
 Try it manually to see how well it works for you and to get your configuation
@@ -138,7 +139,7 @@ sudo mkdir -p /usr/local/etc/mqtt-camera
 sudo cp touchpi.json /usr/local/etc/mqtt-camera
 ```
 
-Create a directory for the python code. I'll use /usr/local/lib and copy it.
+Create a directory for the python code. I'll use /usr/local/lib Copy to it.
 
 ```
 sudo cp mqtt-motion-video.py /usr/local/lib/
