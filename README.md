@@ -76,16 +76,19 @@ sudo pip3 install paho-mqtt
 ```
 #### opencv installation
 Opencv provides the libraries for image manipulation. I use version 4.1.2 which
-is a real pain to install from source, especially on a Raspberry (takes a few hours)
+is a pain to install from source, especially on a Raspberry (it takes a few hours)
 On a Pi Zero it takes a day and a half or more to build from source and it's a bit iffy.
 You really want to use the following link instead
 
 For Raspberry Pi's (https://solarianprogrammer.com/2019/09/17/install-opencv-raspberry-pi-raspbian-cpp-python-development/)[(follow these instructions]
 
-Ubuntu linux has opencv version 3.x in its repo but we want 4.x (4.1.2+) so we have to build from source.
-It's not difficult once you have a working configuration. It does take some time
+If you happen to have a Raspberry 4 with 4MB, it compiles much faster and if
+you are clever that can be used. Far too off topic.
 
-TODO: INSERT configuration here
+Ubuntu linux has opencv version 3.x in its repo but we want 4.x (4.1.2+) so we have to build from source.
+It's not too difficult once you have a the cmake settings. 
+
+TODO: INSERT ubuntu cmake command line here
 
 ### Motion-Video Manual Configuration.
 Try it manually to see how well it works for you and to get your configuation
@@ -138,9 +141,7 @@ Copy your working json file.
 sudo mkdir -p /usr/local/etc/mqtt-camera
 sudo cp touchpi.json /usr/local/etc/mqtt-camera
 ```
-
 Create a directory for the python code. I'll use /usr/local/lib Copy to it.
-
 ```
 sudo cp mqtt-motion-video.py /usr/local/lib/
 ```
@@ -188,14 +189,44 @@ If you want to disable it from starting up at boot time then do `sudo systemctl 
 
 
 ### Hubitat driver install
+ 
+Remember we have two devices. The Hubitat device and the device over in MQTT.
 
-
-The driver file is `mqtt-motion-video.groovy`. Using a web browser, load the Hubitat
+The Hubitat driver file is `mqtt-motion-video.groovy`. Using a web browser, load the Hubitat
 page for your local hub, Select `< > Drivers Code`. Select `New Driver` and copy/paste
 the contents of mqtt-motion-video.groovy into the browser page. Click `Save` and if there
 are no errors then go to the 'Devices' page and `Add Virtual Device`, name it and from the
 drop down `Type*` list select the `MQTT Motion Video` (it's way down at the bottom of
 the list).
+
+You'll get a page for setting up the device. You **must** fill in the MQTT server and the
+two topics. Topic to Subscribe is the the topic that the MQTT camera device is publishing too.
+The Topic to Publish is the the one that the MQTT device is using for control. 
+
+![hubitat-pref](https://user-images.githubusercontent.com/222691/70491917-e9b12d80-1abf-11ea-9805-4fe22b07a1d2.png)
+
+You can change some of those other preferences like `frame_skip` at a later time and when you save them
+the Hubitat driver will attempt to set those on the MQTT device. This will not be permanent. They
+will revert back to the devices defaults when it reboots. We do not use user names and passwords
+for the mqtt server. Using the Configure button also updates the MQTT device and is prefered. 
+
+There is one more thing to do. You may have noticed that the Hubitat Device has On and Off
+buttons. Often, when motion is inactive and your motion rules turns off the light for the area
+then the sudden darkness will trigger the detector to go active resulting in a loop that never
+turns off the lights. It's very camera and light dependent. The off button is there to 
+fix the issue! In the Motion App rule, select the `Options for Additional Sensors, Lights-Off and Off options`
+and then select `Additional Switches to turn off when turned off` and select the camera device. 
+
+Enable/Disable buttons may pause the MQTT device (camera). **May**. 
+
+There is a webserver on the MQTT device which serves up a snapshot image from the camera
+every minute. One minute is hard coded in the MQTT (python) driver. You can 
+use the image_url shown in Current States section. You can create a Dashboard Image tile with
+that url. Refresh time for the tile would be 60 seconds. Anything else would just be wasteful since its
+only going to change once a minute. If the device believes it sent an 'inactive' to Hubitat then 
+the image is in gray scale. It's mostly eye candy. It is not a replacement or substitute for MotionEye
+or for a Security system.
+
 
 ### Performance Tuning
 

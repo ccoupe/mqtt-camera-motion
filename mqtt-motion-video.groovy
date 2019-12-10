@@ -33,9 +33,8 @@ metadata {
     capability "Configuration"
     capability "Refresh"
 		capability "Switch"
+    //capability "Momentary" // Motion lighting can't use this. Too bad.
     
-    //command "off"
-    //command "on"
     command "enable"
     command "disable"
        
@@ -156,7 +155,7 @@ def uninstalled() {
 }
 
 def initialize() {
-	//if (logEnable) runIn(900,logsOff) // clears debugging after 900 somethings
+	if (logEnable) runIn(900,logsOff) // clears debugging after 900 secs ?
   if (logEnable) log.info "Initalize..."
 	try {
     def mqttInt = interfaces.mqtt
@@ -186,29 +185,36 @@ def logsOff(){
 
 // Send commands to device via MQTT
 def disable() {
-  log.debug settings?.topicPub + " disable sensor"
+  if (logEnable) log.debug settings?.topicPub + " disable sensor"
   interfaces.mqtt.publish(settings?.topicPub, "disable", settings?.QOS.toInteger(), settings?.retained)
 }
 
 def enable() {
-  log.debug settings?.topicPub + " enable sensor"
+  if (logEnable) log.debug settings?.topicPub + " enable sensor"
   interfaces.mqtt.publish(settings?.topicPub, "enable", settings?.QOS.toInteger(), settings?.retained)
 }
 
 def refresh() {
-  log.debug settings?.topicPub + " get configuation"
+  if (logEnable) log.debug settings?.topicPub + " get configuation"
   interfaces.mqtt.publish(settings?.topicPub, "conf", settings?.QOS.toInteger(), settings?.retained)
 }
 
 def off() {
-  log.debug settings?.topicPub + " additional off"
+  if (logEnable) log.debug settings?.topicPub + " additional off"
   interfaces.mqtt.publish(settings?.topicPub, "off", settings?.QOS.toInteger(), settings?.retained)
 }
 
 def on() {
-  log.debug settings?.topicPub + " additional on"
+  if (logEnable) log.debug settings?.topicPub + " additional on"
   interfaces.mqtt.publish(settings?.topicPub, "on", settings?.QOS.toInteger(), settings?.retained)
 }
+
+/*
+def push() {
+  if (logEnable) log.debug settings?.topicPub + "lights going off"
+  interfaces.mqtt.publish(settings?.topicPub, "off", settings?.QOS.toInteger(), settings?.retained)
+}
+*/
 
 def configure() {
   def map = [:]
@@ -220,6 +226,6 @@ def configure() {
   map['contour_limit'] = settings.contour_limit.toInteger()
   def json = JsonOutput.toJson(map)
   interfaces.mqtt.publish(settings?.topicPub, "conf=${json}", settings?.QOS.toInteger(), settings?.retained)
-  log.debug "send conf=${json}"
+  if (logEnable) log.debug "send conf=${json}"
   refresh()
 }
