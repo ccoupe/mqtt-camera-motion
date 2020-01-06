@@ -170,6 +170,7 @@ other system events. Call this `mqttcamera.service`
 ```
 [Unit]
 Description=MQTT Camera
+After=network-online.target
 
 [Service]
 ExecStart=/usr/local/bin/mqttcamera.sh

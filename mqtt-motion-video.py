@@ -161,15 +161,16 @@ def one_sec_timer():
 def lux_timer():
   global client, mqtt_pub_topic, curlux, lux_thread, lux_secs
   msg = "lux=%d" %(curlux)
-  client.publish(mqtt_pub_topic,msg)
+  client.publish(mqtt_pub_topic, msg)
   log(msg, 2)
   lux_thread = threading.Timer(lux_secs, lux_timer)
   lux_thread.start()
   
 def snapshot_timer():
   global snapshot_thread, frame1, state
-  dim = (320, 240)
-  nimg = cv2.resize(frame1, dim, interpolation = cv2.INTER_AREA) 
+  #dim = (320, 240)
+  #nimg = cv2.resize(frame1, dim, interpolation = cv2.INTER_AREA)
+  nimg = frame1 
   if state == ACTIVE_ACC:
     status = cv2.imwrite('/var/www/camera/snapshot.png',nimg) 
   else:
@@ -183,7 +184,8 @@ def send_mqtt(str):
   global client, mqtt_pub_topic, curlux
   lstr = ",lux=%d" % (curlux)
   msg = str + lstr
-  client.publish(mqtt_pub_topic,msg)
+  # client.publish(mqtt_pub_topic,msg)
+  client.publish(mqtt_pub_topic, msg)
   log(msg, 1)
 
 def state_machine(signal):
@@ -317,23 +319,45 @@ def on_message(client, userdata, message):
       #  asked for our configuration
       global mqtt_pub_topic
       msg = "conf="+settings_serialize()
-      client.publish(mqtt_pub_topic,msg)
+      client.publish(mqtt_pub_topic, msg)
       log("conf sent", 2)
       return
     else:
       print("unknown command ", payload)
+      
+def isConnected():
+  global mqtt_connected
+  return mqtt_connected
+  
+def on_connect(client, userdata, flags, rc):
+  global mqtt_connected, mqtt_ctl_topic
+  if rc == 0:
+    mqtt_connected = True
+    log("Connected to %s" % mqtt_ctl_topic)
+    client.subscribe(mqtt_ctl_topic)
+     
+def on_disconnect(client, userdata, rc):
+  global mqtt_connected
+  mqtt_connected = False
+  log("mqtt reconnecting")
+  client.reconnect()
     
 def init_prog():
-  global client, camera_warmup
+  global client, camera_warmup, mqtt_connected
   global mqtt_client_name, mqtt_port, mqtt_server, mqtt_ctl_topic
   global timer_thread, tick_len, lux_thread, lux_secs, snapshot_thread
   # For Linux: /dev/video0 is device 0 (pi builtin eg: or first usb webcam)
   time.sleep(camera_warmup)
+  
   client = mqtt.Client(mqtt_client_name, mqtt_port)
+  client.max_queued_messages_set(3)
   client.connect(mqtt_server)
-  client.subscribe(mqtt_ctl_topic)
+  client.on_connect = on_connect
   client.on_message = on_message
+  client.on_disconnect = on_disconnect
+  #client.subscribe(mqtt_ctl_topic)
   client.loop_start()
+
   timer_thread = threading.Timer(tick_len, one_sec_timer)
   timer_thread.start()
   lux_thread = threading.Timer(lux_secs, lux_timer)

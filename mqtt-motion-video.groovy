@@ -33,7 +33,6 @@ metadata {
     capability "Configuration"
     capability "Refresh"
 		capability "Switch"
-    //capability "Momentary" // Motion lighting can't use this. Too bad.
     
     command "enable"
     command "disable"
@@ -50,10 +49,10 @@ metadata {
     input name: "password", type: "password", title: "MQTT Password:", description: "(blank if none)", required: false, displayDuringSetup: true
     input name: "topicSub", type: "text", title: "Topic to Subscribe:", 
         description: "Example Topic (office/cameras/camera1). Please don't use a #", 
-        required: false, displayDuringSetup: true
+        required: true, displayDuringSetup: true
     input name: "topicPub", type: "text", title: "Topic to Publish:",
         description: "Example Topic (office/cameras/camera1_control)", 
-        required: false, displayDuringSetup: true
+        required: true, displayDuringSetup: true
     input name: "QOS", type: "text", title: "QOS Value:", required: false, 
         defaultValue: "1", displayDuringSetup: true
     input name: "retained", type: "bool", title: "Retain message:", required:false,
@@ -105,33 +104,36 @@ def parse(String description) {
     // get the values out of rmconf into the gui preferences
     if (rmconf['frame_skip']) {
       device.updateSetting("frame_skip",rmconf['frame_skip'].toInteger())
-      //sendEvent(name: "frame_skip", value: rmconf['frame_skip'], displayed: true);
+      sendEvent(name: "frame_skip", value: rmconf['frame_skip'], displayed: true);
     }
     if (rmconf['lux_level']) {
       device.updateSetting("lux_level",rmconf['lux_level'].toFloat())
-      //sendEvent(name: "lux_level", value: rmconf['lux_level'], displayed: true);
+      sendEvent(name: "lux_level", value: rmconf['lux_level'], displayed: true);
     }
     if (rmconf['contour_limit']) {
       device.updateSetting("contour_limit",rmconf['contour_limit'].toInteger())
-      //sendEvent(name: "contour_limit", value: rmconf['contour_limit'], displayed: true);
+      sendEvent(name: "contour_limit", value: rmconf['contour_limit'], displayed: true);
     }
     if (rmconf['tick_len']) {
       device.updateSetting("tick_len",rmconf['tick_len'].toInteger())
-      //sendEvent(name: "tick_len", value: rmconf['tick_len'], displayed: true);
-    }
+       sendEvent(name: "tick_len", value: rmconf['tick_len'], displayed: true);
+   }
     if (rmconf['active_hold']) {
       device.updateSetting("active_hold",rmconf['active_hold'].toInteger())
-      //sendEvent(name: "active_hold", value: rmconf['active_hold'], displayed: true);
+      sendEvent(name: "active_hold", value: rmconf['active_hold'], displayed: true);
     }
     if (rmconf['lux_secs']) {
       device.updateSetting("lux_secs",rmconf['lux_secs'].toInteger())
-      //sendEvent(name: "lux_secs", value: rmconf['lux_secs'], displayed: true);
+      sendEvent(name: "lux_secs", value: rmconf['lux_secs'], displayed: true);
     }
     if (rmconf['image_url']) {
       sendEvent(name: "image_url", value: rmconf['image_url'], displayed: true);
     }
+    /* If this parse() call is from the first refresh
+     * trigger a browser reload (i.e. push "Save Preferences" button)
+     */
   }
-  // lux=n can tag along with active,inactive to can be by itself
+  // lux=n can tag along with active,inactive or can be by itself
   if (payload.contains("lux=")) {
     p = payload.indexOf("lux=")
     lux = payload[p+4..-1].toInteger()
@@ -140,13 +142,12 @@ def parse(String description) {
   } 
 }
 
-
 def updated() {
   if (logEnable) log.info "Updated..."
   if (interfaces.mqtt.isConnected() == false)
     initialize()
-  // send json struct of all preferences? 
-  configure()
+  else 
+    configure()
 }
 
 def uninstalled() {
@@ -155,7 +156,7 @@ def uninstalled() {
 }
 
 def initialize() {
-	if (logEnable) runIn(900,logsOff) // clears debugging after 900 secs ?
+	if (logEnable) runIn(900,logsOff) // clears debugging after 900 secs 
   if (logEnable) log.info "Initalize..."
 	try {
     def mqttInt = interfaces.mqtt
@@ -174,8 +175,34 @@ def initialize() {
 }
 
 
-def mqttClientStatus(String status){
-  if (logEnable) log.debug "MQTTStatus- error: ${message}"
+def mqttClientStatus(String status) {
+  if (status.startsWith("Error")) {
+    def restart = false
+    if (! interfaces.mqtt.isConnected()) {
+      log.warn "mqtt isConnected false"
+      restart = true
+    }  else if (status.contains("lost")) {
+      log.warn "mqtt Connection lost detected"
+      restart = true
+    } else {
+      log.warn "mqtt error: ${status}"
+    }
+    if (restart) {
+      def i = 0
+      while (i < 60) {
+        // wait for a minute for things to settle out, server to restart, etc...
+        pauseExecution(1000*60)
+        initialize()
+        if (interfaces.mqtt.isConnected()) {
+          log.warn "mqtt reconnect success!"
+          break
+        }
+        i = i + 1
+      }
+    }
+  } else {
+    if (logEnable) log.warn "mqtt OK: ${status}"
+  }
 }
 
 def logsOff(){
