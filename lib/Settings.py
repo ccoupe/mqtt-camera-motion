@@ -3,10 +3,11 @@ import json
 import socket
 from uuid import getnode as get_mac
 import os 
+import sys
 
 class Settings:
 
-  def __init__(self, etcf, varf, log, ovr=True):
+  def __init__(self, etcf, varf, log):
     self.etcfname = etcf
     self.varfname = varf
     self.log = log
@@ -31,76 +32,66 @@ class Settings:
     self.active_hold = 10      # number of ticks to hold 'active' state. From json & mqtt
     self.tick_len = 5          # number of seconds per tick. From json & mqtt
     
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    s.connect(('<broadcast>', 0))
-    self.our_IP =  s.getsockname()[0]
-    self.image_url = "http://%s:7534/camera/snapshot.png" % self.our_IP
-    # from stackoverflow (of course):
-    self.macAddr = ':'.join(("%012x" % get_mac())[i:i+2] for i in range(0, 12, 2))
-   
+    # IP and MacAddr are not important (should not be important).
+    if sys.platform.startswith('linux'):
+      s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+      s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+      s.connect(('<broadcast>', 0))
+      self.our_IP =  s.getsockname()[0]
+      # from stackoverflow (of course):
+      self.macAddr = ':'.join(("%012x" % get_mac())[i:i+2] for i in range(0, 12, 2))
+    elif sys.platform.startswith('darwin'):
+      host_name = socket.gethostname() 
+      self.our_IP = socket.gethostbyname(host_name) 
+      self.macAddr = ':'.join(("%012x" % get_mac())[i:i+2] for i in range(0, 12, 2))
+    else:
+      # TODO somebody else can deal with Windows
+      self.our_IP = "192.168.1.255"
+      self.macAddr = "de:ad:be:ef"
     
-    # load oldest first, newest last
-    # create self.varfname (often need to be root)
-    if ovr:
+    # load etc settings first
+    self.load_settings(self.etcfname)
+    # Use self.varfname (need to be root for this to work:
+    if self.settings_rw:
       try:
         path = os.path.dirname(self.varfname)
         os.makedirs(path, 0o777, True)
       except:
           print("write conf error:", sys.exc_info()[0])
           os.exit()
-      self.load_settings(self.etcfname)
       if os.path.exists(self.varfname):
         self.load_settings(self.varfname)
         print("Settings overridden with", self.varfname)
-      else:
-        print("Settings from", self.etcfname)
     else:
-      self.load_settings(self.etcfname)
-    
-  def getHwAddr(ifname):
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    info = fcntl.ioctl(s.fileno(), 0x8927,  struct.pack('256s', bytes(ifname, 'utf-8')[:15]))
-    return ':'.join('%02x' % b for b in info[18:24])
+      print("Settings from", self.etcfname)
+      
 
   def load_settings(self, fn):
+    print("loading settings from ",fn)
     conf = json.load(open(fn))
-    if conf["server_ip"]:
-      self.mqtt_server = conf["server_ip"]
-    if conf["port"]:
-      self.mqtt_port = conf["port"]
-    if conf["client_name"]:
-      self.mqtt_client_name = conf["client_name"]
-    if conf["topic_publish"]:
-      self.mqtt_pub_topic = conf["topic_publish"]
-    if conf["topic_control"]:
-      self.mqtt_ctl_topic = conf["topic_control"]
-    if conf['camera_number']:
-      self.camera_number = conf["camera_number"]
-    if conf["camera_width"]:
-      self.camera_width = conf["camera_width"]
-    if conf["camera_height"]:
-      self.camera_height = conf["camera_height"]
-    if conf["frame_skip"]:
-      self.frame_skip = conf["frame_skip"]
-    if conf["camera_warmup"]:
-      self.camera_warmup = conf["camera_warmup"]
-    if conf["lux_level"]:
-      self.lux_level = conf["lux_level"]
-    if conf["contour_limit"]:
-      self.contour_limit = conf["contour_limit"]
-    if conf["tick_len"]:
-      self.tick_len = conf["tick_len"]
-    if conf["active_hold"]:
-      self.active_hold = conf["active_hold"]
-    if conf['lux_secs']:
-      self.lux_secs = conf['lux_secs']
-    # TODO:  - Homie, options for Lux device
-    if conf['homie_device']:
-      self.homie_device = conf['homie_device']
-    if conf['homie_name']:
-      self.homie_name = conf['homie_name']
+    self.mqtt_server = conf.get("mqtt_server_ip", None)
+    self.mqtt_port = conf.get("port", 1883)
+    self.mqtt_client_name = conf.get("client_name", "Bad Client")
+    self.mqtt_pub_topic = conf.get("topic_publish", None)
+    self.mqtt_ctl_topic = conf.get("topic_control", None)
+    self.homie_device = conf.get('homie_device', "unknown")
+    self.homie_name = conf.get('homie_name', "Unknown Device")
+    self.camera_number = conf.get("camera_number", -1)
+    self.camera_width = conf.get("camera_width", 640)
+    self.camera_height = conf.get("camera_height", 480)
+    self.frame_skip = conf.get("frame_skip", 10)
+    self.camera_warmup = conf.get("camera_warmup", 1.0)
+    self.lux_level = conf.get("lux_level", 0.60)
+    self.contour_limit = conf.get("contour_limit", 900)
+    self.tick_len = conf.get("tick_len", 5)
+    self.active_hold = conf.get("active_hold", 10)
+    self.lux_secs = conf.get('lux_secs', 60)
+    self.settings_rw = conf.get('settings_rw', False)
+    # TODO? - Homie options for Lux device
     self.rtsp_uri = conf.get('rtsp_uri', None)
+    self.snapshot = conf.get('snapshot', False)
+    if (self.snapshot):
+      self.image_url = "http://%s:7534/camera/snapshot.png" % self.our_IP
 
 
   def print(self):
@@ -109,9 +100,9 @@ class Settings:
   
   def settings_serialize(self):
     st = {}
-    st['server_ip'] = self.mqtt_server
-    st['port'] = self.mqtt_port
-    st['client_name'] = self.mqtt_client_name
+    st['mqtt_server_ip'] = self.mqtt_server
+    st['mqtt_port'] = self.mqtt_port
+    st['mqtt_client_name'] = self.mqtt_client_name
     st['topic_publish'] = self.mqtt_pub_topic
     st['topic_control'] = self.mqtt_ctl_topic
     st['homie_device'] = self.homie_device 
@@ -127,6 +118,9 @@ class Settings:
     st['active_hold'] = self.active_hold
     st['lux_secs'] = self.lux_secs
     st['image_url'] = self.image_url
+    st['rtsp_uri'] = self.rtsp_uri
+    st['settings_rw'] = self.settings_rw
+    st['snapshot'] = self.snapshot
     str = json.dumps(st)
     return str
 

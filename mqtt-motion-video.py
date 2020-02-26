@@ -242,7 +242,7 @@ elif debug_level == 3:
 # Lets spin it up.  
 settings = Settings(args["conf"], 
                     "/var/local/etc/mqtt-camera.json",
-                    log, (debug_level != 3))
+                    log)
 hmqtt = Homie_MQTT(settings, 
                   settings.get_active_hold,
                   settings.set_active_hold)

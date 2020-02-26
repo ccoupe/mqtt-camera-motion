@@ -1,9 +1,11 @@
 {
-  "server_ip": "192.168.1.7",
-  "port": 1883,
-  "client_name": "touchpi_camera",
+  "mqtt_server_ip": "192.168.1.7",
+  "mqtt_port": 1883,
+  "mqtt_client_name": "touchpi_camera",
   "topic_publish": "cameras/family/touchpi",
   "topic_control": "cameras/family/touchpi_control",
+  "homie_device": "p3_touch",
+  "homie_name": "Pi 3 Touch & Camera"
   "camera_number": -1,
   "camera_height": 480,
   "camera_width": 640,
@@ -13,5 +15,6 @@
   "contour_limit": 900,
   "tick_len": 5,
   "active_hold": 10,
-  "lux_secs": 300
+  "lux_secs": 300,
+  "settings_rw": True
 }

@@ -1,7 +1,7 @@
 {
-  "server_ip": "192.168.1.7",
+  "mqtt_server_ip": "192.168.1.7",
   "port": 1883,
-  "client_name": "pi3_camera",
+  "mqtt_client_name": "pi3_camera",
   "homie_device": "office_test",
   "homie_name": "Pi3 Camera",
   "topic_publish": "cameras/office/test",
@@ -15,5 +15,7 @@
   "contour_limit": 900,
   "tick_len": 5,
   "active_hold": 10,
-  "lux_secs": 60
+  "lux_secs": 60,
+  "snapshot": true,
+  "settings_rw": false
 }
