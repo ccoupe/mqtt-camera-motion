@@ -5,7 +5,7 @@
   "topic_publish": "cameras/office/motion",
   "topic_control": "cameras/office/motion_control",
   "homie_device": "pi0_cam",
-  "homie_name": "Pi Zero Camera"
+  "homie_name": "Pi Zero Camera",
   "camera_number": -1,
   "camera_height": 480,
   "camera_width": 640,
@@ -16,5 +16,6 @@
   "tick_len": 5,
   "active_hold": 10,
   "lux_secs":300,
-  "settings_rw": True
+  "settings_rw": true,
+  "snapshot": true
 }

@@ -70,8 +70,8 @@ class Settings:
     print("loading settings from ",fn)
     conf = json.load(open(fn))
     self.mqtt_server = conf.get("mqtt_server_ip", None)
-    self.mqtt_port = conf.get("port", 1883)
-    self.mqtt_client_name = conf.get("client_name", "Bad Client")
+    self.mqtt_port = conf.get("mqtt_port", 1883)
+    self.mqtt_client_name = conf.get("mqtt_client_name", "Bad Client")
     self.mqtt_pub_topic = conf.get("topic_publish", None)
     self.mqtt_ctl_topic = conf.get("topic_control", None)
     self.homie_device = conf.get('homie_device', "unknown")
@@ -90,8 +90,7 @@ class Settings:
     # TODO? - Homie options for Lux device
     self.rtsp_uri = conf.get('rtsp_uri', None)
     self.snapshot = conf.get('snapshot', False)
-    if (self.snapshot):
-      self.image_url = "http://%s:7534/camera/snapshot.png" % self.our_IP
+    self.image_url = "http://%s:7534/camera/snapshot.png" % self.our_IP
 
 
   def print(self):
