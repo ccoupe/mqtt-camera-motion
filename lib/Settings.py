@@ -90,6 +90,8 @@ class Settings:
     # TODO? - Homie options for Lux device
     self.rtsp_uri = conf.get('rtsp_uri', None)
     self.snapshot = conf.get('snapshot', False)
+    self.face_frames = conf.get('face_frames', 60)
+    self.algo = conf.get('ML_algo', None)
     self.image_url = "http://%s:7534/camera/snapshot.png" % self.our_IP
 
 
@@ -179,8 +181,9 @@ class Settings:
     if v > 3600:
       v = 3600
     self.active_hold = v
-    f = open(self.varfname,"w+")
-    f.write(self.settings_serialize())
-    f.close()
+    if self.settings_rw:
+      f = open(self.varfname,"w+")
+      f.write(self.settings_serialize())
+      f.close()
     print("leaving set_active_hold")
 

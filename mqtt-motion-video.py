@@ -37,6 +37,8 @@ active_ticks = 0
 frattr1 = False
 frattr2 = False
 off_hack = False
+detect_flag = False   # signal complex detection/recog pass
+#fc_frame_cnt = 60
 
 # some debugging and stats variables
 debug_level = 0          # From command line
@@ -55,7 +57,7 @@ def log(msg, level=2):
   else:
     (dt, micro) = datetime.now().strftime('%H:%M:%S.%f').split('.')
     dt = "%s.%03d" % (dt, int(micro) / 1000)
-    logmsg = "%-14.14s%-20.20s%3d %- 5.2f" % (dt, msg, curlux, luxsum/luxcnt)
+    logmsg = "%-14.14s%-40.40s%3d %- 5.2f" % (dt, msg, curlux, luxsum/luxcnt)
   print(logmsg, flush=True)
  
 # ---------  Timer functions -----------
@@ -90,7 +92,7 @@ def snapshot_timer():
 # --------- state machine -------------
 def state_machine(signal):
   global motion_cnt, no_motion_cnt, active_ticks, lux_cnt
-  global settings, hmtqq, timer_thread, state, off_hack
+  global settings, hmtqq, timer_thread, state, off_hack, detect_flag
   if state == WAITING:
     if signal == MOTION:
       # hack ahead. Don't send active if lux_sum & cnt have been reset
@@ -152,10 +154,52 @@ def lux_calc(frame):
       luxsum = luxsum + curlux
       luxcnt = luxcnt + 1
     return ok
-
+    
+def face_detect(image, debug):
+  global dlnet, settings
+  n = 0
+  fc = 0
+  #log("face check")
+  while fc < settings.face_frames and n == 0:
+    (h, w) = image.shape[:2]
+    blob = cv2.dnn.blobFromImage(cv2.resize(image, (300, 300)), 1.0,
+      (300, 300), (104.0, 177.0, 123.0))
+    # pass the blob through the network and obtain the detections and
+    # predictions
+    dlnet.setInput(blob)
+    detections = dlnet.forward()
+    n = 0
+    for i in range(0, detections.shape[2]):
+      confidence = detections[0, 0, i, 2]
+      if confidence > 0.5:
+        n = n + 1
+    if n > 0:
+      break   # one is enough
+    image = read_cam(cap, dimcap)
+    fc = fc + 1
+		
+  log('Faces: %d' % n);
+  return n > 0
+      
 def find_movement(debug):
     global frame1, frame2, frattr1, frattr2
-    global settings, dimcap
+    global settings, dimcap, hmqtt
+    # detection is requested asynchronously via mqtt message sent to us
+    # watch out for loops - it's an expensive computation
+    # TODO? - should be done in state_machine where we can cancel?
+    if hmqtt.detect_flag:
+      rslt = False
+      if settings.algo == 'face':
+        rslt = face_detect(frame1, debug)
+      if rslt:
+        st = MOTION
+      else:
+        st = NO_MOTION
+      state_machine(st)
+      hmqtt.detect_flag = False
+      hmqtt.send_detect(rslt)
+      return st
+      
     motion = NO_MOTION
     # if the light went out, don't try to detect motion
     if frattr1 and frattr2:
@@ -185,7 +229,7 @@ def find_movement(debug):
     frame1 = frame2
     frattr1 = frattr2
     time.sleep((1.0/30.0) * settings.frame_skip)
-    #ret, frame2 = cap.read()
+
     frame2 = read_cam(cap, dimcap)
     frattr2 = lux_calc(frame2)   
     return motion == MOTION
@@ -195,7 +239,7 @@ def cleanup(do_windows):
   if show_windows:
     cv2.destroyAllWindows()
   cap.release()
-  settings.client.loop_stop()
+  hmqtt.client.loop_stop()
   if show_windows:
     print("average of lux mean ", luxsum/luxcnt)
   timer_thread.cancel()
@@ -214,6 +258,7 @@ def init_timers(settings):
 
 def read_cam(dev,dim):
   ret, frame = dev.read()
+  # what to do if ret is not good? 
   frame_n = cv2.resize(frame, dim)
   return frame_n
   
@@ -248,6 +293,7 @@ hmqtt = Homie_MQTT(settings,
                   settings.set_active_hold)
 settings.print()
 
+dlnet = cv2.dnn.readNetFromCaffe("deploy.prototxt.txt", "res10_300x300_ssd_iter_140000.caffemodel")
 # Done with setup. 
 
 if settings.rtsp_uri:
@@ -258,23 +304,17 @@ else:
 if not  cap.isOpened():
   print("FAILED to open camera")
   exit()
-#ret = cap.set(3, settings.camera_width)
-#ret = cap.set(4, settings.camera_height)
-#ret = cap.set(5, camera_fps)
+
 init_timers(settings)
 dimcap = (settings.camera_width, settings.camera_height)
-#ret, frame1 = cap.read()
 frame1 = read_cam(cap, dimcap)
 frattr1 = lux_calc(frame1)
-#ret, frame2 = cap.read()
 frame2 = read_cam(cap, dimcap)
 frattr2 = lux_calc(frame2)
 
 while 1:
   motion = find_movement(show_windows)
-  #cv2.imshow("feed", frame1)
   if show_windows and cv2.waitKey(40) == 27:
     break
-  #frame1 = read_cam(cap, dimcap)
 cleanup(show_windows)
   

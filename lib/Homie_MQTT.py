@@ -15,7 +15,7 @@ class Homie_MQTT:
     self.log = settings.log
     self.getCb = getCb
     self.setCb = setCb
-  
+    self.detect_flag = False
     # init server connection
     self.client = mqtt.Client(settings.mqtt_client_name, False)
     #self.client.max_queued_messages_set(3)
@@ -94,6 +94,22 @@ class Homie_MQTT:
     
   def publish_structure(self, topic, payload):
     self.client.publish(topic, payload, qos=1, retain=True)
+    
+  # publish with attempts for error recovery
+  def publish_msg(self, topic, payload):
+    rc = mqtt.MQTT_ERR_NO_CONN
+    while rc != mqtt.MQTT_ERR_SUCCESS:
+      rc,_ = self.client.publish(topic, payload, qos=1, retain=False)
+      if rc == mqtt.MQTT_ERR_NO_CONN:
+        # on_disconnect() Should be called to reconnect, so we wait.
+        if not self.isConnected():
+          self.log("Publish_msg() Waiting for connection")
+          time.sleep(60)
+      elif rc == mqtt.MQTT_ERR_QUEUE_SIZE:
+        self.log("Publish_msg() waiting to queue")
+        time.sleep(15)
+      elif rc != mqtt.MQTT_ERR_SUCCESS:
+        self.log("Publish_msg() unknown rc: %d" % rc)
 
   def on_subscribe(self, client, userdata, mid, granted_qos):
     print("on_subscribe() %s %d %d " % userdata, mid, granted_qos) 
@@ -108,7 +124,7 @@ class Homie_MQTT:
         v = int(payload)
         if self.getCb() != v:
           self.setCb(v)
-          self.client.publish(self.hactive_pub, str(self.getCb()))
+          self.publish_msg(self.hactive_pub, str(self.getCb()))
         else:
           self.log("active_hold not changed")
       elif (topic == self.hcontrol_sub):
@@ -116,11 +132,14 @@ class Homie_MQTT:
           off_hack = True
         elif (payload == 'on'):
           off_hack = False
+        elif payload == 'detect':
+          #self.log("calling detCb %s" % type(self.detCb))
+         self.detect_flag = True
         else:
           self.log("control payload unknown: %s" % payload)
         self.log("Control: %s" % payload)
       else:
-        print("on_message() unknown command ", message)
+        self.log("on_message() unknown command: %s" % message)
     except:
       print("on_message error:", sys.exc_info()[0])
 
@@ -131,21 +150,37 @@ class Homie_MQTT:
   def on_connect(self, client, userdata, flags, rc):
     if rc != mqtt.MQTT_ERR_SUCCESS:
       self.log("Connection failed")
-       
+      self.mqtt_connected = False
+      time.sleep(60)
+      self.client.reconnect()
+    else:
+      self.mqtt_connected = True
+    
   def on_disconnect(self, client, userdata, rc):
     self.mqtt_connected = False
-    self.log("mqtt reconnecting")
-    self.client.reconnect()
+    self.log("Disconnected")
+    while not self.mqtt_connected:
+      time.sleep(60)
+      self.log("mqtt reconnecting")
+      self.client.reconnect()
       
   
   def send_active(self, tf):
+    global detect_flag
     if tf:
       msg =  "active"
-      self.client.publish(self.hmotion_pub, "true")
-      self.client.publish(self.hstatus_pub, msg)
+      self.publish_msg(self.hmotion_pub, "true")
+      self.publish_msg(self.hstatus_pub, msg)
     else:
       msg = "inactive"
-      self.client.publish(self.hmotion_pub, "false")
-      self.client.publish(self.hstatus_pub, msg)
+      self.publish_msg(self.hmotion_pub, "false")
+      self.publish_msg(self.hstatus_pub, msg)
     self.log(msg, 1)
-  
+
+  def send_detect(self, tf):
+    if tf:
+      self.publish_msg(self.hcontrol_pub, "true")
+      self.log("mqtt detect is true")
+    else:
+      self.publish_msg(self.hcontrol_pub, "false")
+      self.log("mqtt detect is false")
