@@ -2,6 +2,7 @@
 import cv2
 import numpy as np
 import paho.mqtt.client as mqtt
+import imutils
 import sys
 import json
 import argparse
@@ -39,6 +40,7 @@ frattr2 = False
 off_hack = False
 detect_flag = False   # signal complex detection/recog pass
 #fc_frame_cnt = 60
+g_confidence = 0.2
 
 # some debugging and stats variables
 debug_level = 0          # From command line
@@ -77,9 +79,7 @@ def lux_timer():
   lux_thread.start()
   
 def snapshot_timer():
-  global snapshot_thread, frame1, state
-  #dim = (320, 240)
-  #nimg = cv2.resize(frame1, dim, interpolation = cv2.INTER_AREA)
+  global snapshot_thread, frame1, state, settings
   nimg = frame1 
   if state == ACTIVE_ACC:
     status = cv2.imwrite('/var/www/camera/snapshot.png',nimg) 
@@ -180,6 +180,68 @@ def face_detect(image, debug):
 		
   log('Faces: %d' % n);
   return n > 0
+
+def shapes_detect(image, debug):
+  global dlnet, settings, CLASSES, COLORS, cap, dimcap, g_confidence
+  n = 0
+  fc = 0
+  log("shape check")
+  while fc < settings.face_frames and n == 0:
+    # grab the frame from the threaded video stream and resize it
+    # to have a maximum width of 400 pixels
+    frame = imutils.resize(image, width=400)
+  
+    # grab the frame dimensions and convert it to a blob
+    (h, w) = frame.shape[:2]
+    blob = cv2.dnn.blobFromImage(cv2.resize(frame, (300, 300)),
+      0.007843, (300, 300), 127.5)
+  
+    # pass the blob through the network and obtain the detections and
+    # predictions
+    dlnet.setInput(blob)
+    detections = dlnet.forward()
+  
+    # loop over the detections
+    for i in np.arange(0, detections.shape[2]):
+      # extract the confidence (i.e., probability) associated with
+      # the prediction
+      confidence = detections[0, 0, i, 2]
+  
+      # filter out weak detections by ensuring the `confidence` is
+      # greater than the minimum confidence
+      if confidence > g_confidence:
+        # extract the index of the class label from the
+        # `detections`, then compute the (x, y)-coordinates of
+        # the bounding box for the object
+        idx = int(detections[0, 0, i, 1])
+        if idx == 15:
+          n += 1
+          break
+        if debug:
+          box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
+          (startX, startY, endX, endY) = box.astype("int")
+    
+          # draw the prediction on the frame
+          label = "{}: {:.2f}%".format(CLASSES[idx],
+            confidence * 100)
+          cv2.rectangle(frame, (startX, startY), (endX, endY),
+            COLORS[idx], 2)
+          y = startY - 15 if startY - 15 > 15 else startY + 15
+          cv2.putText(frame, label, (startX, y),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLORS[idx], 2)
+  
+    # show the output frame
+    if debug:
+      cv2.imshow("Frame", frame)
+      key = cv2.waitKey(1) & 0xFF
+      # if the `q` key was pressed, break from the loop
+      if key == ord("q"):
+        break
+    if n > 0:
+      break
+    image = read_cam(cap, dimcap)
+    fc = fc + 1
+  return True if n > 0 else False
       
 def find_movement(debug):
     global frame1, frame2, frattr1, frattr2
@@ -191,6 +253,8 @@ def find_movement(debug):
       rslt = False
       if settings.algo == 'face':
         rslt = face_detect(frame1, debug)
+      elif settings.algo == 'shapes':
+        rslt = shapes_detect(frame1, debug)
       if rslt:
         st = MOTION
       else:
@@ -270,6 +334,8 @@ ap.add_argument("-d", "--debug", action='store', type=int, default='3',
   nargs='?', help="debug level, default is 3")
 ap.add_argument("-s", "--system", action = 'store', nargs='?',
   default=False, help="use syslog")
+ap.add_argument("-a", "--algorithm", required=False, type=str, default=None,
+  help="detection algorithm override")
 args = vars(ap.parse_args())
 # fix debug levels
 if args['debug'] == None:
@@ -288,12 +354,26 @@ elif debug_level == 3:
 settings = Settings(args["conf"], 
                     "/var/local/etc/mqtt-camera.json",
                     log)
+if args['algorithm']:
+  settings.algo = args['algorithm']
+  print("cmd line selects algo", settings.algo)
+  
 hmqtt = Homie_MQTT(settings, 
                   settings.get_active_hold,
                   settings.set_active_hold)
 settings.print()
-
-dlnet = cv2.dnn.readNetFromCaffe("deploy.prototxt.txt", "res10_300x300_ssd_iter_140000.caffemodel")
+if settings.algo == 'face':
+  dlnet = cv2.dnn.readNetFromCaffe("face/deploy.prototxt.txt", "face/res10_300x300_ssd_iter_140000.caffemodel")
+elif settings.algo == 'shapes':
+  # initialize the list of class labels MobileNet SSD was trained to
+  # detect, then generate a set of bounding box colors for each class
+  CLASSES = ["background", "aeroplane", "bicycle", "bird", "boat",
+    "bottle", "bus", "car", "cat", "chair", "cow", "diningtable",
+    "dog", "horse", "motorbike", "person", "pottedplant", "sheep",
+    "sofa", "train", "tvmonitor"]
+  COLORS = np.random.uniform(0, 255, size=(len(CLASSES), 3))
+  dlnet = cv2.dnn.readNetFromCaffe("shapes/MobileNetSSD_deploy.prototxt.txt",
+    "shapes/MobileNetSSD_deploy.caffemodel")
 # Done with setup. 
 
 if settings.rtsp_uri:
