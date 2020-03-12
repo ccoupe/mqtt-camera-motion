@@ -2,8 +2,6 @@
   "mqtt_server_ip": "192.168.1.7",
   "mqtt_port": 1883,
   "mqtt_client_name": "pi0_camera",
-  "topic_publish": "cameras/office/motion",
-  "topic_control": "cameras/office/motion_control",
   "homie_device": "pi0_cam",
   "homie_name": "Pi Zero Camera",
   "camera_number": -1,
@@ -16,6 +14,8 @@
   "tick_len": 5,
   "active_hold": 10,
   "lux_secs":300,
-  "settings_rw": true,
-  "snapshot": true
+  "settings_rw": false,
+  "snapshot": true,
+  "face_frames": 10,
+  "ML_algo: "shapes"
 }

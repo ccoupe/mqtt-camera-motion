@@ -374,6 +374,8 @@ elif settings.algo == 'shapes':
   COLORS = np.random.uniform(0, 255, size=(len(CLASSES), 3))
   dlnet = cv2.dnn.readNetFromCaffe("shapes/MobileNetSSD_deploy.prototxt.txt",
     "shapes/MobileNetSSD_deploy.caffemodel")
+    
+g_confidence = settings.confidence
 # Done with setup. 
 
 if settings.rtsp_uri:

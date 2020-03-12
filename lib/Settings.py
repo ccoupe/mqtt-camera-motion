@@ -92,6 +92,7 @@ class Settings:
     self.snapshot = conf.get('snapshot', False)
     self.face_frames = conf.get('face_frames', 60)
     self.algo = conf.get('ML_algo', None)
+    self.confidence = conf.get('confidence', 0.4)
     self.image_url = "http://%s:7534/camera/snapshot.png" % self.our_IP
 
 
@@ -122,6 +123,9 @@ class Settings:
     st['rtsp_uri'] = self.rtsp_uri
     st['settings_rw'] = self.settings_rw
     st['snapshot'] = self.snapshot
+    st['ML_algo'] = self.algo
+    st['face_frames'] = self.face_frames
+    st['confidence'] = self.confidence
     str = json.dumps(st)
     return str
 
