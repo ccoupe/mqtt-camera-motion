@@ -17,5 +17,8 @@
   "settings_rw": false,
   "snapshot": false,
   "face_frames": 60,
-  "ML_algo": "face"
+  "ml_algo": "shapes",
+  "ml_server_ip": "192.168.1.2",
+  "ml_port": 4433,
+  "confidence": 0.4
 }

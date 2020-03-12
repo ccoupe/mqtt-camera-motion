@@ -14,6 +14,7 @@ import socket
 from lib.Settings import Settings
 from lib.Homie_MQTT import Homie_MQTT
     
+import rpyc
 
 # globals
 settings = None
@@ -41,7 +42,8 @@ off_hack = False
 detect_flag = False   # signal complex detection/recog pass
 #fc_frame_cnt = 60
 g_confidence = 0.2
-
+shape_proxy = None
+  
 # some debugging and stats variables
 debug_level = 0          # From command line
 show_windows = False		# -d on the command line for True
@@ -245,16 +247,19 @@ def shapes_detect(image, debug):
       
 def find_movement(debug):
     global frame1, frame2, frattr1, frattr2
-    global settings, dimcap, hmqtt
+    global settings, dimcap, hmqtt, shape_proxy
     # detection is requested asynchronously via mqtt message sent to us
     # watch out for loops - it's an expensive computation
     # TODO? - should be done in state_machine where we can cancel?
     if hmqtt.detect_flag:
       rslt = False
-      if settings.algo == 'face':
+      if settings.ml_algo == 'face':
         rslt = face_detect(frame1, debug)
-      elif settings.algo == 'shapes':
-        rslt = shapes_detect(frame1, debug)
+      elif settings.ml_algo == 'shapes':
+        if settings.ml_server_ip:
+          rslt = shape_proxy.root.shapes_detect(settings.face_frames, settings.confidence, remote_cam)
+        else:
+          rslt = shapes_detect(frame1, debug)
       if rslt:
         st = MOTION
       else:
@@ -325,6 +330,16 @@ def read_cam(dev,dim):
   # what to do if ret is not good? 
   frame_n = cv2.resize(frame, dim)
   return frame_n
+ 
+def remote_cam(width):
+  global cap
+  #log("remote_cam callback called width: %d" % width)
+  ret, fr = cap.read()
+  fr = imutils.resize(fr, width)
+  _, jpg = cv2.imencode('.jpg',fr)
+  bfr = jpg.tostring()
+  #print(type(fr), type(jpg), len(jpg), len(bfr))
+  return bfr
   
 # process cmdline arguments
 ap = argparse.ArgumentParser()
@@ -362,9 +377,14 @@ hmqtt = Homie_MQTT(settings,
                   settings.get_active_hold,
                   settings.set_active_hold)
 settings.print()
-if settings.algo == 'face':
+
+if settings.ml_server_ip and settings.ml_algo == 'shapes':
+  shape_proxy = rpyc.connect(settings.ml_server_ip, settings.ml_port, 
+    config={'allow_public_attrs': True})
+  print("Proxy setup")
+elif settings.ml_algo == 'face':
   dlnet = cv2.dnn.readNetFromCaffe("face/deploy.prototxt.txt", "face/res10_300x300_ssd_iter_140000.caffemodel")
-elif settings.algo == 'shapes':
+elif settings.ml_algo == 'shapes':
   # initialize the list of class labels MobileNet SSD was trained to
   # detect, then generate a set of bounding box colors for each class
   CLASSES = ["background", "aeroplane", "bicycle", "bird", "boat",
