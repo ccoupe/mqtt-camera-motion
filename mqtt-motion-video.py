@@ -335,7 +335,7 @@ def remote_cam(width):
   global cap
   #log("remote_cam callback called width: %d" % width)
   ret, fr = cap.read()
-  fr = imutils.resize(fr, width)
+  fr = cv2.resize(fr, (width, width))
   _, jpg = cv2.imencode('.jpg',fr)
   bfr = jpg.tostring()
   #print(type(fr), type(jpg), len(jpg), len(bfr))
