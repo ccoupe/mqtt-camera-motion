@@ -19,8 +19,163 @@ import rpyc
 # globals
 settings = None
 hmqtt = None
-# state machine enums (cheap enums)
-# signals:
+
+# State machines deal with events causing a movement to another state
+# the movement or transition may invoke a procedure. Most of the ending
+# state of a transition is predeteremined. A few have to calculate and
+# return the next state. 
+
+# state machine enums - must be indices.
+# States:
+DISABLED_ST = 0
+MOTION_WAIT_ST = 1
+MOTION_HOLD_ST = 2
+CHECK_WAIT_ST = 3
+# Events
+MOTION_EV = 0
+NO_MOTION_EV = 1
+TICK_EV = 2
+CHECK_EV = 3
+DET_TRUE_EV = 4
+DET_FALSE_EV = 5
+START_EV = 6
+STOP_EV = 7
+LIGHTS_OUT_EV = 8
+
+# Transition procs/functions - arguments may not be used or useful. 
+# in a Real multiple process system there might be a mutex for the
+# global cur_state
+  
+def trans_proc1(cur_st, new_st):
+  # mqtt send 'inactive', 
+  pass
+  
+def trans_proc2(cur_st, new_st):
+  # mqtt send 'active', set mot_hold counter
+  pass
+  
+def trans_proc3(cur_st, new_st):
+  # reset mot_hold_counter
+  pass
+  
+def trans_proc4(cur_st, new_st):
+  # decrement mot_hold counter
+  # if <=0 then send inactive,  return MOTION_WAIT_ST
+  # else return MOTION_HOLD_ST (stay in calling state)
+  pass
+  
+def trans_proc5(cur_st, new_st):
+  # start synchronous [remote] ML/AI detector
+  # ticks may arrive while waiting
+  pass  
+  
+def trans_proc6(cur_st, new_st):
+  # if timeout, move to MOTION_WAIT_ST
+  pass
+  
+def trans_proc7(cur_st, new_st):
+  # mqtt send 'present'
+  pass
+  
+def trans_proc8(cur_st, new_st):
+  # mqtt send 'notpresent'
+  pass
+  
+def trans_proc9(cur_st, new_st):
+  # delay 1 sec. Do not process camera frames while waiting
+  pass
+  
+def trans_proc10(cur_st, new_st):
+  # delay 1 sec. Do not process camera frames while waiting
+  # mqtt send 'inactive'
+  pass
+
+# Alloc space for state table
+st_table = [ [0] * 4 for i in range(9) ]
+
+# File in each row. The column value is a [2 element list]
+st_table[MOTION_EV] = [
+    [DISABLED_ST, None],
+    [MOTION_HOLD_ST, trans_proc2],
+    [MOTION_HOLD_ST, trans_proc3],
+    [CHECK_WAIT_ST, None]
+  ]
+  
+st_table[NO_MOTION_EV] = [
+    [DISABLED_ST, None],
+    [MOTION_WAIT_ST, None],
+    [MOTION_HOLD_ST, trans_proc1],
+    [CHECK_WAIT_ST, None]
+  ]
+  
+st_table[TICK_EV] = [
+    [DISABLED_ST, None],
+    [MOTION_WAIT_ST, None],
+    [None, trans_proc4],
+    [None, trans_proc6],
+  ]
+  
+st_table[CHECK_EV] = [
+    [DISABLED_ST, None],
+    [CHECK_WAIT_ST, trans_proc5],
+    [CHECK_WAIT_ST, trans_proc5],
+    [CHECK_WAIT_ST, None]
+  ]
+
+st_table[DET_TRUE_EV] = [
+    [DISABLED_ST, None],
+    [MOTION_HOLD_ST, trans_proc7],
+    [MOTION_HOLD_ST, trans_proc7],
+    [MOTION_HOLD_ST, trans_proc7]
+  ]
+  
+st_table[DET_FALSE_EV] = [
+    [DISABLED_ST, None],
+    [MOTION_WAIT_ST, trans_proc8],
+    [MOTION_WAIT_ST, trans_proc8],
+    [MOTION_WAIT_ST, trans_proc8]
+  ]
+
+st_table[START_EV] = [
+    [MOTION_WAIT_ST, trans_proc1],
+    [MOTION_WAIT_ST, trans_proc1],
+    [MOTION_WAIT_ST, trans_proc1],
+    [MOTION_WAIT_ST, trans_proc1]
+  ]
+  
+st_table[STOP_EV] = [
+    [DISABLED_ST, None],
+    [DISABLED_ST, trans_proc1],
+    [DISABLED_ST, trans_proc1],
+    [DISABLED_ST, trans_proc8]
+  ]
+  
+st_table[LIGHTS_OUT_EV] = [
+    [DISABLED_ST, None],
+    [MOTION_WAIT_ST, trans_proc9],
+    [MOTION_WAIT_ST, trans_proc10],
+    [MOTION_WAIT_ST, trans_proc8]
+  ]
+
+cur_state = MOTION_WAIT_ST
+
+def next_state(nevent):
+  row = st_table[nevent]
+  cell = row[cur_state]
+  ns = cell[0]
+  proc = cell[1]
+  if ns == None and proc == None:
+    raise Exception('State Machine', 'no state and no proc')
+  if ns == None:
+    cur_state = proc(cur_state, ns)
+  else:
+    if proc:
+      proc(curr_state, ns)
+    cur_state = ns
+
+# TODO: Some kind of debug/logging of state movements
+  
+## old state machine 
 MOTION = 1
 NO_MOTION = 0
 FIRED = 2
