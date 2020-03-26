@@ -2,6 +2,7 @@
 import cv2
 import numpy as np
 import paho.mqtt.client as mqtt
+from imutils.video import VideoStream
 import imutils
 import sys
 import json
@@ -9,33 +10,57 @@ import argparse
 import warnings
 from datetime import datetime
 import time,threading, sched
+from threading import Lock
 import socket
+import csv
+import atexit
 
 from lib.Constants import State, Event
 from lib.Settings import Settings
 from lib.Homie_MQTT import Homie_MQTT
+from lib.Algo import Algo
     
 import rpyc
 
-# globals
+# globals - yes it is a ton of globals
 settings = None
 hmqtt = None
+video_dev = None
+detector_thread = None
+sm_lock = Lock()             # state machine lock - only one thread at a time
+motion_cnt = 0
+no_motion_cnt = 0
+timer_thread = None
+snapshot_thread = None
+active_ticks = 0
+frattr1 = False
+frattr2 = False
+#off_hack = False
+detect_flag = False   # signal complex detection/recog pass
+shape_proxy = None
+  
+# some debugging and stats variables
+debug_level = 0          # From command line
+show_windows = False		# -d on the command line for True
+luxcnt = 1
+luxsum = 0.0
+curlux = 0
+use_syslog = False
 
 # State machines deal with events causing a movement to another state
 # the movement or transition may invoke a procedure. Most of the ending
-# state of a transition is predeteremined. A few have to calculate and
+# state of a transition is predeteremined. A few have to calculate to
 # return the next state. 
-
-def reset_timer():
-  global timer_thread
-  timer_thread = threading.Timer(settings.tick_len, one_sec_event)
-  timer_thread.start()
 
 
 # The table method is difficult to program. Unrolled, it's large. Sigh!
 # Both are difficult to debug
+# We need to lock other threads out while the current thread proceeds
+# to the end of the function
 def next_state(nevent):
-  global cur_state, hmqtt, settings, motion_cnt, timer_thread
+  global cur_state, hmqtt, settings, motion_cnt, timer_thread, logwriter
+  global detector_thread, sm_lock
+  sm_lock.acquire()
   lc = cur_state
   next_st = None
   if nevent == Event.motion:
@@ -92,47 +117,30 @@ def next_state(nevent):
     timer_thread = threading.Timer(settings.tick_len, one_sec_event)
     timer_thread.start()
   elif nevent == Event.check:
-    # TODO: skip_check
-    print("Check event occurred")
     if cur_state == State.disabled:
       next_st = State.disabled
-    elif cur_state == State.motion_wait:
-      next_st = cur_state
-    elif cur_state == State.motion_hold:
-      next_st = cur_state
-    elif cur_state == State.check_wait:
-     next_st = cur_state
-    elif cur_state == State.restart:
-      next_st = cur_state                   # stay
     else:
-      raise Exception('State Machine', ("bad state %d for event %d " % cur_state, nevent))
+      next_st = State.check_wait
+      # there is a chance for a network call, or it takes a while to run
+      # locally so it's done in a new thread. Beware of the locking or
+      # race condition 
+      detector_thread = threading.Thread(target=detector_general, args=())
+      ##detector_thread.daemon = True
+      detector_thread.start()
   elif nevent == Event.det_true:
-    # TODO
     if cur_state == State.disabled:
       next_st = State.disabled
-    elif cur_state == State.motion_wait:
-      next_st = cur_state
-    elif cur_state == State.motion_hold:
-      next_st = cur_state
-    elif cur_state == State.check_wait:
-      next_st = cur_state
-    elif cur_state == State.restart:
-      next_st = cur_state                   # stay
     else:
-      raise Exception('State Machine', ("bad state %d for event %d " % cur_state, nevent))
+      motion_cnt = settings.active_hold
+      hmqtt.send_detect(True)
+      next_st = State.motion_hold
   elif nevent == Event.det_false:
     if cur_state == State.disabled:
       next_st = State.disabled
-    elif cur_state == State.motion_wait:
-      next_st = cur_state
-    elif cur_state == State.motion_hold:
-      next_st = cur_state
-    elif cur_state == State.check_wait:
-      next_st = cur_state
-    elif cur_state == State.restart:
-      next_st = cur_state                   # stay
     else:
-      raise Exception('State Machine', ("bad state %d for event %d " % cur_state, nevent))
+      hmqtt.send_detect(False)
+      motion_cnt = settings.active_hold
+      next_st = State.motion_wait
   elif nevent == Event.start:
     if cur_state == State.disabled:
       next_st = State.disabled
@@ -143,9 +151,14 @@ def next_state(nevent):
     elif cur_state == State.check_wait:
       next_st = cur_state
     elif cur_state == State.restart:
-      next_st = cur_state                   # TODO: stay
+      next_st = cur_state                   
     else:
       raise Exception('State Machine', ("bad state %d for event %d " % cur_state, nevent))
+    # TODO - recursive call may not be unwound. Could crash in a week or two
+    # of hubitat driver button pushes. Only used for testing so It's OK.
+    cur_state = State.motion_wait
+    next_state(Event.lights_out)
+    next_st = State.motion_wait
   elif nevent == Event.stop:
     if cur_state == State.disabled:
       next_st = State.disabled
@@ -156,68 +169,54 @@ def next_state(nevent):
     elif cur_state == State.check_wait:
       next_st = cur_state
     elif cur_state == State.restart:
-      next_st = cur_state                   # stay
+      next_st = cur_state                   
     else:
       raise Exception('State Machine', ("bad state %d for event %d " % cur_state, nevent))
+    hmqtt.send_active(False)
+    next_st = State.disabled
   elif nevent == Event.lights_out:
     # Happens when external process (like hubitat - turns of the switch
     # associated with our motion sensor. Done in Motion Lighting App.
-    # TODO: we really need a state for lights out as well as an event.
     log(Event.lights_out)
     if cur_state == State.disabled:
       next_st = State.disabled
     elif cur_state == State.motion_wait:
-      time.sleep(2)                     
+      camera_spin(5)                     
       next_st = State.restart
     elif cur_state == State.motion_hold: 
       # TODO: sending the inactive could trigger a check coming back to us
-      # it's probably a futile thing to do but ....
-      time.sleep(2)
+      # it's probably a futile thing to do in lights out, but ....
       hmqtt.send_active(False)
-      next_st = State.restart;         
+      camera_spin(5)
+      next_st = State.restart         
     elif cur_state == State.check_wait:
       next_st = State.restart
     elif cur_state == State.restart:
-      next_st = cur_state                   # stay
+      next_st = State.restart                   # stay
     else:
       raise Exception('State Machine', ("bad state %d for event %d " % cur_state, nevent))
   else:
     raise Exception('State Machine', 'unknown event')
+  
+  if next_st != cur_state and logwriter:
+    (dt, micro) = datetime.now().strftime('%H:%M:%S.%f').split('.')
+    dt = "%s.%03d" % (dt, int(micro) / 1000)
+    logwriter.writerow([dt, round(curlux), round(luxsum/luxcnt), nevent, lc, next_st])
+  
   # Finally ;-)
   cur_state = next_st
   if cur_state == None:
     print("event", nevent, "old", lc, "next", cur_state)
     exit()
+  sm_lock.release()
+  return cur_state
     
 def one_sec_event():
   next_state(Event.tick)   
   return
-# alias 
-state_mach = next_state
-
-motion_cnt = 0
-no_motion_cnt = 0
-timer_thread = None
-snapshot_thread = None
-active_ticks = 0
-frattr1 = False
-frattr2 = False
-off_hack = False
-detect_flag = False   # signal complex detection/recog pass
-#fc_frame_cnt = 60
-g_confidence = 0.2
-shape_proxy = None
-  
-# some debugging and stats variables
-debug_level = 0          # From command line
-show_windows = False		# -d on the command line for True
-luxcnt = 1
-luxsum = 0.0
-curlux = 0
-use_syslog = False
   
 def log(msg, level=2):
-  global luxcnt, luxsum, curlux, debug_level, use_syslog
+  global luxcnt, luxsum, curlux, debug_level, use_syslog, logwriter
   if level > debug_level:
     return
   if use_syslog:
@@ -226,15 +225,26 @@ def log(msg, level=2):
     (dt, micro) = datetime.now().strftime('%H:%M:%S.%f').split('.')
     dt = "%s.%03d" % (dt, int(micro) / 1000)
     logmsg = "%-14.14s%-40.40s%3d %- 5.2f" % (dt, msg, curlux, luxsum/luxcnt)
+  if logwriter:
+    (dt, micro) = datetime.now().strftime('%H:%M:%S.%f').split('.')
+    dt = "%s.%03d" % (dt, int(micro) / 1000)
+    logwriter.writerow([dt, round(curlux,2), round(luxsum/luxcnt,2), msg])
   print(logmsg, flush=True)
  
 # ---------  Timer functions -----------
+'''
 def one_sec_timer():
-  global off_hack
+  global off_hack, sm_lock
   if off_hack:
     off_hack = False;     # clear hack for lights off
   old_state_machine(FIRED)    # async? is it thread safe? maybe?
   return
+'''  
+
+def reset_timer():
+  global timer_thread
+  timer_thread = threading.Timer(settings.tick_len, one_sec_event)
+  timer_thread.start()
   
 def lux_timer():
   global settings, curlux, lux_thread
@@ -246,12 +256,13 @@ def lux_timer():
   
 def snapshot_timer():
   global snapshot_thread, frame1, cur_state, settings
+  #log("Snapshot taken")
   nimg = frame1 
   if cur_state == State.motion_hold:
-    status = cv2.imwrite('/var/www/camera/snapshot.png',nimg) 
+    status = cv2.imwrite('/var/www/camera/snapshot.jpg',nimg) 
   else:
     gray = cv2.cvtColor(nimg, cv2.COLOR_BGR2GRAY)
-    status = cv2.imwrite('/var/www/camera/snapshot.png',gray) 
+    status = cv2.imwrite('/var/www/camera/snapshot.jpg',gray) 
   snapshot_thread = threading.Timer(60, snapshot_timer)
   snapshot_thread.start()
       
@@ -270,129 +281,45 @@ def lux_calc(frame):
       luxsum = luxsum + curlux
       luxcnt = luxcnt + 1
     return ok
-    
-def face_detect(image, debug):
-  global dlnet, settings
-  n = 0
-  fc = 0
-  #log("face check")
-  while fc < settings.face_frames and n == 0:
-    (h, w) = image.shape[:2]
-    blob = cv2.dnn.blobFromImage(cv2.resize(image, (300, 300)), 1.0,
-      (300, 300), (104.0, 177.0, 123.0))
-    # pass the blob through the network and obtain the detections and
-    # predictions
-    dlnet.setInput(blob)
-    detections = dlnet.forward()
-    n = 0
-    for i in range(0, detections.shape[2]):
-      confidence = detections[0, 0, i, 2]
-      if confidence > 0.5:
-        n = n + 1
-    if n > 0:
-      break   # one is enough
-    image = read_cam(cap, dimcap)
-    fc = fc + 1
-		
-  log('Faces: %d' % n);
-  return n > 0
 
-def shapes_detect(image, debug):
-  global dlnet, settings, CLASSES, COLORS, cap, dimcap, g_confidence
-  n = 0
-  fc = 0
-  log("shape check")
-  while fc < settings.face_frames and n == 0:
-    # grab the frame from the threaded video stream and resize it
-    # to have a maximum width of 400 pixels
-    frame = imutils.resize(image, width=400)
-  
-    # grab the frame dimensions and convert it to a blob
-    (h, w) = frame.shape[:2]
-    blob = cv2.dnn.blobFromImage(cv2.resize(frame, (300, 300)),
-      0.007843, (300, 300), 127.5)
-  
-    # pass the blob through the network and obtain the detections and
-    # predictions
-    dlnet.setInput(blob)
-    detections = dlnet.forward()
-  
-    # loop over the detections
-    for i in np.arange(0, detections.shape[2]):
-      # extract the confidence (i.e., probability) associated with
-      # the prediction
-      confidence = detections[0, 0, i, 2]
-  
-      # filter out weak detections by ensuring the `confidence` is
-      # greater than the minimum confidence
-      if confidence > g_confidence:
-        # extract the index of the class label from the
-        # `detections`, then compute the (x, y)-coordinates of
-        # the bounding box for the object
-        idx = int(detections[0, 0, i, 1])
-        if idx == 15:
-          n += 1
-          break
-        if debug:
-          box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
-          (startX, startY, endX, endY) = box.astype("int")
-    
-          # draw the prediction on the frame
-          label = "{}: {:.2f}%".format(CLASSES[idx],
-            confidence * 100)
-          cv2.rectangle(frame, (startX, startY), (endX, endY),
-            COLORS[idx], 2)
-          y = startY - 15 if startY - 15 > 15 else startY + 15
-          cv2.putText(frame, label, (startX, y),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLORS[idx], 2)
-  
-    # show the output frame
-    if debug:
-      cv2.imshow("Frame", frame)
-      key = cv2.waitKey(1) & 0xFF
-      # if the `q` key was pressed, break from the loop
-      if key == ord("q"):
-        break
-    if n > 0:
-      break
-    image = read_cam(cap, dimcap)
-    fc = fc + 1
-  return True if n > 0 else False
+# we grab a frame and pass it to the correct algo. Which may be an rpyc proxy
+# these are not called continously - only after movement is detected and
+# then if a deeper check is requested. Then call the state machine to
+# deal with the result. 
+def detector_general():
+  global settings, ml_dict, frame1, show_windows
+  result = False
+  time.sleep(1)       # one second delay, get a new frame
+  read_local_resize()
+  mlobj = ml_dict[settings.ml_algo]
+  if settings.use_ml == 'remote':
+    result, n = mlobj.proxy.root.detectors(settings.ml_algo, False, settings.confidence, image_serialize(frame1))
+  else:
+    result, n = mlobj.proxy(settings.ml_algo, show_windows, settings.confidence, frame1)
+  if result:
+    next_state(Event.det_true)
+  else:
+    next_state(Event.det_false)
+
+def image_serialize(image):
+  _, jpg = cv2.imencode('.jpg',image)
+  bfr = jpg.tostring()
+  #log("jpg_toString: %d" % len(bfr))
+  return bfr
   
 # --------- adrian_1 movement detection ----------
-# Adrian @ pyimagesearch.com wrote/publized this. 
-
+# Adrian @ pyimagesearch.com wrote/publicized most of this. 
 def adrian_1_init():
-  global frame1, frame2, frattr1, frattr2, cur_state 
-  frame1 = read_cam(cap, dimcap)
+  global frame1, frame2, frattr1, frattr2, cur_state, dimcap
+  frame1 = read_cam(dimcap)
   frattr1 = lux_calc(frame1)
-  frame2 = read_cam(cap, dimcap)
+  frame2 = read_cam(dimcap)
   frattr2 = lux_calc(frame2)
   cur_state = State.motion_wait
 
 def adrian_1_movement(debug):
     global frame1, frame2, frattr1, frattr2
-    global settings, dimcap, hmqtt, shape_proxy
-    # detection is requested asynchronously via mqtt message sent to us
-    # watch out for loops - it's an expensive computation
-    # TODO? - should be done in state_machine where we can cancel?
-    if hmqtt.detect_flag:
-      rslt = False
-      if settings.ml_algo == 'face':
-        rslt = face_detect(frame1, debug)
-      elif settings.ml_algo == 'shapes':
-        if settings.ml_server_ip:
-          rslt = shape_proxy.root.shapes_detect(settings.face_frames, settings.confidence, remote_cam)
-        else:
-          rslt = shapes_detect(frame1, debug)
-      if rslt:
-        st = Event.motion
-      else:
-        st = Event.no_motion
-      next_state(st)
-      hmqtt.detect_flag = False
-      hmqtt.send_detect(rslt)
-      return st
+    global settings, dimcap, hmqtt, shape_proxy, cur_state
       
     motion = Event.no_motion
     # if the light went out, don't try to detect motion
@@ -417,18 +344,21 @@ def adrian_1_movement(debug):
   
       if debug:
         cv2.drawContours(frame1, contours, -1, (0, 255, 0), 2)
-        cv2.imshow("feed", frame1)
+        cv2.imshow("Adrian_1", frame1)
       if motion == Event.no_motion:
         next_state(Event.no_motion)
     frame1 = frame2
     frattr1 = frattr2
     time.sleep((1.0/30.0) * settings.frame_skip)
 
-    frame2 = read_cam(cap, dimcap)
+    frame2 = read_cam(dimcap)
     frattr2 = lux_calc(frame2)   
     return motion == Event.motion
 
 # ----- intel's movement algo
+def intel_init():
+    log("intel_init")
+    
 def distMap(frame1, frame2):
     """outputs pythagorean distance between two frames"""
     frame1_32 = np.float32(frame1)
@@ -446,11 +376,15 @@ def intel_movement(debug, read_cam):
     cv2.namedWindow('dist')
     
   frame1 = read_cam()
+  lux_calc(frame1)
   frame2 = read_cam()
+  lux_calc(frame2)
+  
   while(True):
     if cur_state == State.restart:
       return True
     frame3 = read_cam()
+    lux_calc(frame3)
     rows, cols, _ = np.shape(frame3)    
     if debug:
       cv2.imshow('dist', frame3)
@@ -471,11 +405,12 @@ def intel_movement(debug, read_cam):
       cv2.imshow('dist', mod)
       cv2.putText(frame2, "Standard Deviation - {}".format(round(stDev[0][0],0)), (70, 70), font, 1, (255, 0, 255), 1, cv2.LINE_AA)
 
-
     if stDev > settings.mv_threshold:
-      next_state(Event.motion)
+      if cur_state != State.motion_hold:
+        next_state(Event.motion)
     else:
-      next_state(Event.no_motion)
+      if cur_state != State.motion_wait:
+        next_state(Event.no_motion)
       
     if debug:
       cv2.imshow('frame', frame2)
@@ -483,20 +418,17 @@ def intel_movement(debug, read_cam):
           break
     time.sleep((1.0/30.0) * settings.frame_skip)
   return False
-  cap.release()
-  cv2.destroyAllWindows()
+  
 
-
-# ------ 
-
-def cleanup(do_windows):
-  global client, cap, luxcnt, luxsum, timer_thread
+def cleanup():
+  global client, video_dev, luxcnt, luxsum, timer_thread, show_windows
+  if logwriter:
+    csvfile.close()
   if show_windows:
     cv2.destroyAllWindows()
-  cap.release()
+  #video_dev.stop()
   hmqtt.client.loop_stop()
-  if show_windows:
-    print("average of lux mean ", luxsum/luxcnt)
+  print("average of lux mean ", luxsum/luxcnt)
   timer_thread.cancel()
   return
 
@@ -511,26 +443,44 @@ def init_timers(settings):
   snapshot_thread.start()
 
 
-def read_cam(dev,dim):
-  ret, frame = dev.read()
+def read_cam(dim):
+  global video_dev
+  ret, frame = video_dev.read()
   # what to do if ret is not good? 
   frame_n = cv2.resize(frame, dim)
   return frame_n
  
 def read_local_resize():
-  global cap, dimcap
-  ret, fr = cap.read()
-  return cv2.resize(fr, dimcap)
+  global video_dev, dimcap
+  return read_cam(dimcap)
   
 def remote_cam(width):
-  global cap
+  global video_dev
   #log("remote_cam callback called width: %d" % width)
-  ret, fr = cap.read()
+  fr = video_dev.read()
   fr = cv2.resize(fr, (width, width))
   _, jpg = cv2.imencode('.jpg',fr)
   bfr = jpg.tostring()
   #print(type(fr), type(jpg), len(jpg), len(bfr))
   return bfr
+  
+# read frames and discard for 'sec' seconds
+# note: even the pi0 can do 30fps if we don't process them
+def camera_spin(sec):
+  global video_dev
+  log("begin spin")
+  for n in range(sec * 30):
+    video_dev.read()
+  log("end spin")
+  
+def build_ml_dict():
+  global ml_dict, settings
+  ml_dict['Cnn_Face'] = Algo('Cnn_Face', settings)
+  ml_dict['Cnn_Shapes'] = Algo('Cnn_Shapes', settings)
+  ml_dict['Haar_Face'] = Algo('Haar_Face', settings)
+  ml_dict['Haar_FullBody'] = Algo('Haar_FullBody', settings)
+  ml_dict['Haar_UpperBody'] = Algo('Haar_UpperBody', settings)
+  ml_dict['Hog_People'] = Algo('Hog_People', settings)
   
 # process cmdline arguments
 ap = argparse.ArgumentParser()
@@ -544,7 +494,12 @@ ap.add_argument("-a", "--algorithm", required=False, type=str, default=None,
   help="detection algorithm override")
 ap.add_argument("-m", "--movement", required=False, type=str, default='adrian_1',
   help="movement algorithm override")
+ap.add_argument("-l", "--log", required=False, action = "store_true", default=False,
+  help="log events to file")
+ap.add_argument("-r", "--remote", required=False, action = "store_true", default=False,
+  help="log events to file")
 args = vars(ap.parse_args())
+
 # fix up debug levels
 if args['debug'] == None:
   debug_level = 3
@@ -557,6 +512,15 @@ if args['system'] == None:
   # setup syslog ?
 elif debug_level == 3:
   show_windows = True
+  
+
+# log file
+logwriter = None
+csvfile = None
+if args['log']:
+  csvfile = open('events.csv', 'w', newline='')
+  logwriter = csv.writer(csvfile, delimiter=',', quotechar='|')
+  print("logging...")
 
 # Lets spin it up.  
 settings = Settings(args["conf"], 
@@ -567,64 +531,60 @@ settings = Settings(args["conf"],
 # cmd line args override settings file.
 if args['algorithm']:
   settings.ml_algo = args['algorithm']
-  print("cmd line selects algo", settings.ml_algo)
+  print("cmd line algo selection:", settings.ml_algo)
 if args['movement']:
   settings.mv_algo = args['movement']
-  print("cmd line movement", settings.mv_algo)
+  print("cmd line movement selection:", settings.mv_algo)
+if args['remote']:
+  settings.use_ml = 'remote'
   
 hmqtt = Homie_MQTT(settings, 
                   settings.get_active_hold,
                   settings.set_active_hold)
 settings.print()
+if logwriter:
+  logwriter.writerow([settings.settings_serialize])
+  
+# setup ml_dict
+ml_dict = {}
+build_ml_dict()
 
-if settings.ml_server_ip and settings.ml_algo == 'shapes':
-  shape_proxy = rpyc.connect(settings.ml_server_ip, settings.ml_port, 
-    config={'allow_public_attrs': True})
-  print("Proxy setup")
-elif settings.ml_algo == 'face':
-  dlnet = cv2.dnn.readNetFromCaffe("face/deploy.prototxt.txt", "face/res10_300x300_ssd_iter_140000.caffemodel")
-elif settings.ml_algo == 'shapes':
-  # initialize the list of class labels MobileNet SSD was trained to
-  # detect, then generate a set of bounding box colors for each class
-  CLASSES = ["background", "aeroplane", "bicycle", "bird", "boat",
-    "bottle", "bus", "car", "cat", "chair", "cow", "diningtable",
-    "dog", "horse", "motorbike", "person", "pottedplant", "sheep",
-    "sofa", "train", "tvmonitor"]
-  COLORS = np.random.uniform(0, 255, size=(len(CLASSES), 3))
-  dlnet = cv2.dnn.readNetFromCaffe("shapes/MobileNetSSD_deploy.prototxt.txt",
-    "shapes/MobileNetSSD_deploy.caffemodel")
-    
-g_confidence = settings.confidence
 cur_state = State.motion_wait
-# Done with setup. 
+dimcap = (settings.camera_width, settings.camera_height)
+# Almost Done with setup. Maybe.
 
 if settings.rtsp_uri:
-  cap = cv2.VideoCapture(settings.rtsp_uri)
+  video_dev = cv2.VideoCapture(settings.rtsp_uri)
 else:
-  cap = cv2.VideoCapture(settings.camera_number)
-  
-if not  cap.isOpened():
-  print("FAILED to open camera")
-  exit()
+  if settings.camera_number < 0:
+    #video_dev = VideoStream(usePiCamera=True, resolution = dimcap).start()
+    video_dev = cv2.VideoCapture(settings.camera_number)
+  else:
+    #video_dev = VideoStream(src=settings.camera_number, resolution = dimcap).start()
+    video_dev = cv2.VideoCapture(settings.camera_number)
 
 init_timers(settings)
-dimcap = (settings.camera_width, settings.camera_height)
-
-# now we pick between movement detectors.
+atexit.register(cleanup)
+# now we pick between movement detectors and start the choosen one
 if settings.mv_algo == 'adrian_1':
-  adrian_1_init()
   while True:
-    if cur_state == State.restart:
-      adrian_1_init()
-    foo = adrian_1_movement(show_windows)
+    adrian_1_init()
+    while True:
+      adrian_1_movement(show_windows)
+      if cur_state == State.restart:
+        #log("restarting adrian_1 loop")
+        break
     if show_windows and cv2.waitKey(40) == 27:
       break
 elif settings.mv_algo == 'intel':
   while True:
-    restart = intel_movement(show_windows, read_local_resize)
-    if not restart:
-      break;
+    intel_init()
+    while True:
+      intel_movement(show_windows, read_local_resize)
+      if cur_state == State.restart:
+        log("restarting intel loop")
+        breakl
 else:
-  print("No Movement Algorithim chosen")
-cleanup(show_windows)
+  print("No Movement Algorithm chosen")
+cleanup()
   
