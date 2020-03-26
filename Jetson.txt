@@ -1,11 +1,13 @@
 Jetson Nano
 
-----> download SDK 4.3 and burn to uSDHC card
+done: download SDK 4.3 and burn to uSDHC card
 ----> Boot jetson - do the minimal unix setup
 ----> fixed ip 192.168.1.4
 ----> mount ssd
-----> boot and use ssd for most of system. like the pi4
+----> boot and use ssd for most of system
+      https://www.jetsonhacks.com/2019/09/17/jetson-nano-run-from-usb-drive/
 ----> mount nfs 
 ----> Install the Jetpack SDK 
 ----> Play with samples?
 ----> build opencv 4, with cuda... Pyimage Article.
+----> Deepstream. 
