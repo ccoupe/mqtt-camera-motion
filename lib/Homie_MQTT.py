@@ -2,11 +2,9 @@
 import paho.mqtt.client as mqtt
 import sys
 import json
-
 from datetime import datetime
-import time,threading, sched
-
-import time
+import time, threading, sched
+from lib.Constants import State, Event
 
 class Homie_MQTT:
 
@@ -119,6 +117,7 @@ class Homie_MQTT:
     topic = message.topic
     payload = str(message.payload.decode("utf-8"))
     #print("on_message ", topic, " ", payload)
+    self.log("/control is: %s" % payload)
     try:
       if (topic == self.hactive_sub):
         v = int(payload)
@@ -129,15 +128,23 @@ class Homie_MQTT:
           self.log("active_hold not changed")
       elif (topic == self.hcontrol_sub):
         if (payload == 'off'):
-          off_hack = True
+          self.settings.state_machine(Event.lights_out)
         elif (payload == 'on'):
-          off_hack = False
-        elif payload == 'detect':
+          pass
+        elif payload.startswith('detect'):
           #self.log("calling detCb %s" % type(self.detCb))
-         self.detect_flag = True
+          #self.detect_flag = True
+          ls = payload.split('-')
+          if len(ls) > 1:
+            self.log("switching detector to %s" % ls[1])
+            self.settings.ml_algo = ls[1]
+          self.settings.state_machine(Event.check)
+        elif payload == 'enable':
+          self.settings.state_machine(Event.start)
+        elif payload == 'disable':
+          self.settings.state_machine(Event.stop)
         else:
           self.log("control payload unknown: %s" % payload)
-        self.log("Control: %s" % payload)
       else:
         self.log("on_message() unknown command: %s" % message)
     except:

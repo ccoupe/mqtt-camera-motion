@@ -10,69 +10,51 @@ import warnings
 from datetime import datetime
 import time,threading, sched
 import rpyc
+from lib.Algo import Algo
 
 debug = False;
 
-class MyService(rpyc.Service):
-  def exposed_shapes_detect(self, max_frames, g_confidence, remote_cam):
-    global dlnet, CLASSES, COLORS, debug
-    n = 0
-    fc = 0
-    print("shape check")
-    while fc < max_frames and n == 0:
-      # grab the frame using the network callback - it returns a jpg.
-      enfr = remote_cam(300)
-      nparr = np.fromstring(enfr, np.uint8)
-      frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-      
-      (h, w) = frame.shape[:2]
-      blob = cv2.dnn.blobFromImage(frame, 0.007843, (300, 300), 127.5)
-    
-      # pass the blob through the network and obtain the detections and
-      # predictions
-      dlnet.setInput(blob)
-      detections = dlnet.forward()
-    
-      # loop over the detections
-      for i in np.arange(0, detections.shape[2]):
-        # extract the confidence (i.e., probability) associated with
-        # the prediction
-        confidence = detections[0, 0, i, 2]
-    
-        # filter out weak detections by ensuring the `confidence` is
-        # greater than the minimum confidence
-        if confidence > g_confidence:
-          # extract the index of the class label from the
-          # `detections`, then compute the (x, y)-coordinates of
-          # the bounding box for the object
-          idx = int(detections[0, 0, i, 1])
-          if idx == 15:
-            n += 1
-            break
-          if debug:
-            box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
-            (startX, startY, endX, endY) = box.astype("int")
-      
-            # draw the prediction on the frame
-            label = "{}: {:.2f}%".format(CLASSES[idx],
-              confidence * 100)
-            cv2.rectangle(frame, (startX, startY), (endX, endY),
-              COLORS[idx], 2)
-            y = startY - 15 if startY - 15 > 15 else startY + 15
-            cv2.putText(frame, label, (startX, y),
-              cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLORS[idx], 2)
-    
-      # show the output frame
-      if debug:
-        cv2.imshow("Frame", frame)
-        key = cv2.waitKey(1) & 0xFF
-        # if the `q` key was pressed, break from the loop
-        if key == ord("q"):
-          break
-      if n > 0:
-        break
-      fc = fc + 1
-    return True if n > 0 else False
+class Settings:
+
+  def __init__(self, logw):
+    self.log = logw
+    self.use_ml = None
+
+
+class MyService(rpyc.Service):  
+  
+  def on_connect(self, conn):
+    self.client_ip, _ = conn._config['endpoints'][1]
+   
+  def exposed_detectors(self, name, debug, threshold, imagestr):
+    global ml_dict
+    # convert image arg to cv2/numpy image. it's jpeg
+    nparr = np.fromstring(imagestr, np.uint8)
+    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    mlobj = ml_dict.get(name, None)
+    #print("request from", self.client_ip)
+    stm = time.time()
+    sptm = time.process_time()
+    if mlobj:
+      if name == 'Cnn_Face':
+        result, n = mlobj.face_detect(frame, threshold, debug)
+      elif name == 'Cnn_Shapes':
+        result, n = mlobj.shapes_detect(frame, threshold, debug)
+      elif name.startswith('Haar'):
+        result, n = mlobj.haar_detect(frame, threshold, debug)
+      elif name == 'Hog_People':
+        result, n = mlobj.hog_detect(frame, threshold, debug)
+      eptm = time.process_time()
+      etm = time.time()
+      pt = eptm - sptm
+      ct = etm - stm
+      elstr = "%3.2f%%" % ((pt / ct) * 100)
+      print(self.client_ip, name, result, round(pt, 4), round(ct, 4), elstr)
+      return (result, n)
+    else:
+      print("Call for unknown algo:", name)
+      return (False, "unknown algo: " % name)
+
     
 # process args - port number, 
 ap = argparse.ArgumentParser()
@@ -80,16 +62,15 @@ ap.add_argument("-p", "--port", action='store', type=int, default='4433',
   nargs='?', help="server port number, 4433 is default")
 args = vars(ap.parse_args())
 
-
-# initialize the list of class labels MobileNet SSD was trained to
-# detect, then generate a set of bounding box colors for each class
-CLASSES = ["background", "aeroplane", "bicycle", "bird", "boat",
-  "bottle", "bus", "car", "cat", "chair", "cow", "diningtable",
-  "dog", "horse", "motorbike", "person", "pottedplant", "sheep",
-  "sofa", "train", "tvmonitor"]
-COLORS = np.random.uniform(0, 255, size=(len(CLASSES), 3))
-dlnet = cv2.dnn.readNetFromCaffe("shapes/MobileNetSSD_deploy.prototxt.txt",
-  "shapes/MobileNetSSD_deploy.caffemodel")
+# create a bunch of Objects for each.
+settings = Settings(print)
+ml_dict = {}
+ml_dict['Cnn_Face'] = Algo('Cnn_Face', settings)
+ml_dict['Cnn_Shapes'] = Algo('Cnn_Shapes', settings)
+ml_dict['Haar_Face'] = Algo('Haar_Face', settings)
+ml_dict['Haar_FullBody'] = Algo('Haar_FullBody', settings)
+ml_dict['Haar_UpperBody'] = Algo('Haar_UpperBody', settings)
+ml_dict['Hog_People'] = Algo('Hog_People', settings)
 
 from rpyc.utils.server import ThreadedServer
 t = ThreadedServer(MyService, port = args['port'])

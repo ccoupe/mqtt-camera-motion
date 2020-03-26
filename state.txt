@@ -1,31 +1,31 @@
 State machine
                               States
-                disabled  nomotion  motion   detect  
-                                    hold    holding  
+                disabled  motion_  motion_   check_   restart
+                          wait     hold      wait  
 Events                                         
-camera motion     stay   mot_hold  mot_hold   stay    
+camera motion     stay   mot_hold  mot_hold   stay     stay
                             (2)      (3)
-camera nomotion   stay     stay     no_mot    stay    
+camera nomotion   stay     stay    mot_wait   stay     stay
                                     (1)     
-clock tick        stay     stay     (4)       (6)     
+clock tick        stay     stay     (4)       (6)      stay
                                                
-request check     stay    detect    detect    stay    
+request check     stay    detect    detect    stay     stay
                             (5)      (5)
-detect true       stay    mot_hold  mot_hold  mot_hold 
+detect true       stay    mot_hold  mot_hold  mot_hold stay
                             (7)      (7)       (7)
-detect false      stay    no_mot    no_mot    no_mot
+detect false      stay    mot_wait  mot_wait  mot_wait stay
                             (8)      (8)       (8)
-start             no_mot   no_mot   no_mot    no_mot 
+start            mot_wait mot_wait mot_wait  mot_wait  stay
                    (1)      (1)      (1)       (1)
-
-stop              stay    disabled  disabled  disabled
-                  (1)       (1)     (1)       (8)
-                    
-lights_out        stay     stay     no_mot     no_mot
+stop              stay    disabled  disabled  disabled stay
+                  (1)       (1)       (1)       (8)
+lights_out        stay    restart  restart    restart  stay
                            (9)      (10)        (8)
+                           
+State.restart is special (a hack?)
                    
-lux chg low       stay
-lux chg high      stay
+lux chg low  ? 
+lux chg high ? 
 
 (1) mqtt send 'inactive', 
 (2) mqtt send 'active', set mot_hold counter
@@ -35,67 +35,7 @@ lux chg high      stay
 (6) if timeout, move to no_motion
 (7) mqtt send 'present'
 (8) mqtt send 'notpresent'
-(9) delay(1 sec)
+(9) delay(1 sec), set
 (10) delay(1 sec), send inactive
+(11) start next 1 sec timer.
 
-state_table = event_cell[n_events][n_states]
-event_cell = [exit_state or None:, transition_proc or None]
-  if exit_state is None then transition_proc must return state
-  'stay' means same state is returned
-states[4] = [DISABLED, MOTION_WAIT, MOTION_HOLD, DETECT_WAIT]
-
-  
-st_table[MOTION] = [ [DISABLED, None],
-                     [MOTION_HOLD, trans2],
-                     [MOTION_HOLD, trans3], 
-                     [DETECT_WAIT, None] ]
-st_table[NOMOTION] = [ [DISABLED, None],
-                       [MOTION_WAIT, None],
-                       [MOTION_WAIT, trans1],
-                       [DETECT_WAIT, None] ]
-st_table[TICK] = [ [DISABLED, None],
-                   [MOTION_WAIT, None],
-                   [None, trans4()],
-                   [None, trans6()] ]
-st_table[CHECK] = [ [DISABLED, None],
-                    [DETECT_WAIT, trans5],
-                    [DETECT_WAIT, trans5],
-                    [DETECT_WAIT, None] ]
-st_table[DET_TRUE] = [ [DISABLED, None],
-                       [MOTION_HOLD, trans7],
-                       [MOTION_HOLD, trans7],
-                       [MOTION_HOLD, trans7] ]
-st_table[DET_FALSE] = [ [DISABLED, None],
-                        [MOTION_WAIT, trans8],
-                        [MOTION_WAIT, trans8],
-                        [MOTION_WAIT, trans8] ]
-st_table[START] = [ [MOTION_WAIT, trans1],
-                    [MOTION_WAIT, trans1],
-                    [MOTION_WAIT, trans1],
-                    [MOTION_WAIT, trans1] ]
-st_table[STOP] = [ [DISABLED, None],
-                   [DISABLED, trans(1)],
-                   [DISABLED, trans(1)],
-                   [DISABLED, trans(8)],
-
-st_table[LIGHTS_OUT] = [ [DISABLED, None],
-                         [MOTION_WAIT, trans9],
-                         [MOTION_WAIT, tran10],
-                         [MOTION_WAINT, trans8]
-cur_state = MOTION_WAIT
-
-def next_state(nevent):
-  row = st_table[nevent]
-  cell = row[cur_state]
-  ns = cell[0]
-  proc = cell[1]
-  if ns is None and proc is None:
-    # throw exception
-  if ns is None
-    cur_state = proc()
-  else:
-    if proc:
-      proc()
-    cur_state = ns
-
-# do some sort of debug logging for state_new

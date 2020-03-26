@@ -11,6 +11,7 @@ from datetime import datetime
 import time,threading, sched
 import socket
 
+from lib.Constants import State, Event
 from lib.Settings import Settings
 from lib.Homie_MQTT import Homie_MQTT
     
@@ -25,167 +26,175 @@ hmqtt = None
 # state of a transition is predeteremined. A few have to calculate and
 # return the next state. 
 
-# state machine enums - must be indices.
-# States:
-DISABLED_ST = 0
-MOTION_WAIT_ST = 1
-MOTION_HOLD_ST = 2
-CHECK_WAIT_ST = 3
-# Events
-MOTION_EV = 0
-NO_MOTION_EV = 1
-TICK_EV = 2
-CHECK_EV = 3
-DET_TRUE_EV = 4
-DET_FALSE_EV = 5
-START_EV = 6
-STOP_EV = 7
-LIGHTS_OUT_EV = 8
+def reset_timer():
+  global timer_thread
+  timer_thread = threading.Timer(settings.tick_len, one_sec_event)
+  timer_thread.start()
 
-# Transition procs/functions - arguments may not be used or useful. 
-# in a Real multiple process system there might be a mutex for the
-# global cur_state
-  
-def trans_proc1(cur_st, new_st):
-  # mqtt send 'inactive', 
-  pass
-  
-def trans_proc2(cur_st, new_st):
-  # mqtt send 'active', set mot_hold counter
-  pass
-  
-def trans_proc3(cur_st, new_st):
-  # reset mot_hold_counter
-  pass
-  
-def trans_proc4(cur_st, new_st):
-  # decrement mot_hold counter
-  # if <=0 then send inactive,  return MOTION_WAIT_ST
-  # else return MOTION_HOLD_ST (stay in calling state)
-  pass
-  
-def trans_proc5(cur_st, new_st):
-  # start synchronous [remote] ML/AI detector
-  # ticks may arrive while waiting
-  pass  
-  
-def trans_proc6(cur_st, new_st):
-  # if timeout, move to MOTION_WAIT_ST
-  pass
-  
-def trans_proc7(cur_st, new_st):
-  # mqtt send 'present'
-  pass
-  
-def trans_proc8(cur_st, new_st):
-  # mqtt send 'notpresent'
-  pass
-  
-def trans_proc9(cur_st, new_st):
-  # delay 1 sec. Do not process camera frames while waiting
-  pass
-  
-def trans_proc10(cur_st, new_st):
-  # delay 1 sec. Do not process camera frames while waiting
-  # mqtt send 'inactive'
-  pass
 
-# Alloc space for state table
-st_table = [ [0] * 4 for i in range(9) ]
-
-# File in each row. The column value is a [2 element list]
-st_table[MOTION_EV] = [
-    [DISABLED_ST, None],
-    [MOTION_HOLD_ST, trans_proc2],
-    [MOTION_HOLD_ST, trans_proc3],
-    [CHECK_WAIT_ST, None]
-  ]
-  
-st_table[NO_MOTION_EV] = [
-    [DISABLED_ST, None],
-    [MOTION_WAIT_ST, None],
-    [MOTION_HOLD_ST, trans_proc1],
-    [CHECK_WAIT_ST, None]
-  ]
-  
-st_table[TICK_EV] = [
-    [DISABLED_ST, None],
-    [MOTION_WAIT_ST, None],
-    [None, trans_proc4],
-    [None, trans_proc6],
-  ]
-  
-st_table[CHECK_EV] = [
-    [DISABLED_ST, None],
-    [CHECK_WAIT_ST, trans_proc5],
-    [CHECK_WAIT_ST, trans_proc5],
-    [CHECK_WAIT_ST, None]
-  ]
-
-st_table[DET_TRUE_EV] = [
-    [DISABLED_ST, None],
-    [MOTION_HOLD_ST, trans_proc7],
-    [MOTION_HOLD_ST, trans_proc7],
-    [MOTION_HOLD_ST, trans_proc7]
-  ]
-  
-st_table[DET_FALSE_EV] = [
-    [DISABLED_ST, None],
-    [MOTION_WAIT_ST, trans_proc8],
-    [MOTION_WAIT_ST, trans_proc8],
-    [MOTION_WAIT_ST, trans_proc8]
-  ]
-
-st_table[START_EV] = [
-    [MOTION_WAIT_ST, trans_proc1],
-    [MOTION_WAIT_ST, trans_proc1],
-    [MOTION_WAIT_ST, trans_proc1],
-    [MOTION_WAIT_ST, trans_proc1]
-  ]
-  
-st_table[STOP_EV] = [
-    [DISABLED_ST, None],
-    [DISABLED_ST, trans_proc1],
-    [DISABLED_ST, trans_proc1],
-    [DISABLED_ST, trans_proc8]
-  ]
-  
-st_table[LIGHTS_OUT_EV] = [
-    [DISABLED_ST, None],
-    [MOTION_WAIT_ST, trans_proc9],
-    [MOTION_WAIT_ST, trans_proc10],
-    [MOTION_WAIT_ST, trans_proc8]
-  ]
-
-cur_state = MOTION_WAIT_ST
-
+# The table method is difficult to program. Unrolled, it's large. Sigh!
+# Both are difficult to debug
 def next_state(nevent):
-  row = st_table[nevent]
-  cell = row[cur_state]
-  ns = cell[0]
-  proc = cell[1]
-  if ns == None and proc == None:
-    raise Exception('State Machine', 'no state and no proc')
-  if ns == None:
-    cur_state = proc(cur_state, ns)
+  global cur_state, hmqtt, settings, motion_cnt, timer_thread
+  lc = cur_state
+  next_st = None
+  if nevent == Event.motion:
+    if cur_state == State.disabled:
+      next_st = State.disabled                # stay
+    elif cur_state == State.motion_wait:
+      hmqtt.send_active(True)
+      motion_cnt = settings.active_hold      
+      next_st = State.motion_hold              # trans_proc2
+    elif cur_state == State.motion_hold:
+      next_st = State.motion_hold
+      motion_cnt = settings.active_hold     # trans_proc3
+    elif cur_state == State.check_wait:
+      next_st = State.check_wait            # stay
+    elif cur_state == State.restart:
+      next_st = cur_state                   # stay
+    else:
+      raise Exception('State Machine', "bad state %d for event %d " % (cur_state, nevent))
+  elif nevent == Event.no_motion:
+    if cur_state == State.disabled:
+      next_st = State.disabled                 # stay
+    elif cur_state == State.motion_wait:
+      next_st = State.motion_wait               # stay. inactive with no_motion_events
+    elif cur_state == State.motion_hold:
+      next_st = State.motion_hold           # stay. inactive: timer will send inactive
+    elif cur_state == State.check_wait:
+      next_st = State.check_wait            # stay
+    elif cur_state == State.restart:
+      next_st = cur_state                   # stay
+    else:
+      raise Exception('State Machine', ("bad state %d for event %d " % cur_state, nevent))
+  elif nevent == Event.tick:
+    if cur_state == State.disabled:
+      next_st = State.disabled                  # stay
+    elif cur_state == State.motion_wait:
+      next_st = State.motion_wait               # stay
+    elif cur_state == State.motion_hold:
+      # Much to do                           # trans_proc4
+      motion_cnt -= 1
+      if motion_cnt <= 0:
+        # time to go inactive 
+        hmqtt.send_active(False)
+        next_st = State.motion_wait
+        motion_cnt = settings.active_hold
+      else:
+        next_st = State.motion_hold
+    elif cur_state == State.check_wait:
+      next_st = State.check_wait              # stay, for now. TODO:
+    elif cur_state == State.restart:
+      next_st = cur_state
+    else:
+      raise Exception('State Machine', ("bad state %d for event %d " % cur_state, nevent))
+    # alway restart the timer, it's expired.
+    timer_thread = threading.Timer(settings.tick_len, one_sec_event)
+    timer_thread.start()
+  elif nevent == Event.check:
+    # TODO: skip_check
+    print("Check event occurred")
+    if cur_state == State.disabled:
+      next_st = State.disabled
+    elif cur_state == State.motion_wait:
+      next_st = cur_state
+    elif cur_state == State.motion_hold:
+      next_st = cur_state
+    elif cur_state == State.check_wait:
+     next_st = cur_state
+    elif cur_state == State.restart:
+      next_st = cur_state                   # stay
+    else:
+      raise Exception('State Machine', ("bad state %d for event %d " % cur_state, nevent))
+  elif nevent == Event.det_true:
+    # TODO
+    if cur_state == State.disabled:
+      next_st = State.disabled
+    elif cur_state == State.motion_wait:
+      next_st = cur_state
+    elif cur_state == State.motion_hold:
+      next_st = cur_state
+    elif cur_state == State.check_wait:
+      next_st = cur_state
+    elif cur_state == State.restart:
+      next_st = cur_state                   # stay
+    else:
+      raise Exception('State Machine', ("bad state %d for event %d " % cur_state, nevent))
+  elif nevent == Event.det_false:
+    if cur_state == State.disabled:
+      next_st = State.disabled
+    elif cur_state == State.motion_wait:
+      next_st = cur_state
+    elif cur_state == State.motion_hold:
+      next_st = cur_state
+    elif cur_state == State.check_wait:
+      next_st = cur_state
+    elif cur_state == State.restart:
+      next_st = cur_state                   # stay
+    else:
+      raise Exception('State Machine', ("bad state %d for event %d " % cur_state, nevent))
+  elif nevent == Event.start:
+    if cur_state == State.disabled:
+      next_st = State.disabled
+    elif cur_state == State.motion_wait:
+      next_st = cur_state
+    elif cur_state == State.motion_hold:
+      next_st = cur_state
+    elif cur_state == State.check_wait:
+      next_st = cur_state
+    elif cur_state == State.restart:
+      next_st = cur_state                   # TODO: stay
+    else:
+      raise Exception('State Machine', ("bad state %d for event %d " % cur_state, nevent))
+  elif nevent == Event.stop:
+    if cur_state == State.disabled:
+      next_st = State.disabled
+    elif cur_state == State.motion_wait:
+      next_st = cur_state
+    elif cur_state == State.motion_hold:
+      next_st = cur_state
+    elif cur_state == State.check_wait:
+      next_st = cur_state
+    elif cur_state == State.restart:
+      next_st = cur_state                   # stay
+    else:
+      raise Exception('State Machine', ("bad state %d for event %d " % cur_state, nevent))
+  elif nevent == Event.lights_out:
+    # Happens when external process (like hubitat - turns of the switch
+    # associated with our motion sensor. Done in Motion Lighting App.
+    # TODO: we really need a state for lights out as well as an event.
+    log(Event.lights_out)
+    if cur_state == State.disabled:
+      next_st = State.disabled
+    elif cur_state == State.motion_wait:
+      time.sleep(2)                     
+      next_st = State.restart
+    elif cur_state == State.motion_hold: 
+      # TODO: sending the inactive could trigger a check coming back to us
+      # it's probably a futile thing to do but ....
+      time.sleep(2)
+      hmqtt.send_active(False)
+      next_st = State.restart;         
+    elif cur_state == State.check_wait:
+      next_st = State.restart
+    elif cur_state == State.restart:
+      next_st = cur_state                   # stay
+    else:
+      raise Exception('State Machine', ("bad state %d for event %d " % cur_state, nevent))
   else:
-    if proc:
-      proc(curr_state, ns)
-    cur_state = ns
+    raise Exception('State Machine', 'unknown event')
+  # Finally ;-)
+  cur_state = next_st
+  if cur_state == None:
+    print("event", nevent, "old", lc, "next", cur_state)
+    exit()
+    
+def one_sec_event():
+  next_state(Event.tick)   
+  return
+# alias 
+state_mach = next_state
 
-# TODO: Some kind of debug/logging of state movements
-  
-## old state machine 
-MOTION = 1
-NO_MOTION = 0
-FIRED = 2
-# states
-WAITING = 0
-ACTIVE_ACC = 1
-INACT_ACC = 2
-
-# state machine internal variables
-state = WAITING
 motion_cnt = 0
 no_motion_cnt = 0
 timer_thread = None
@@ -224,7 +233,7 @@ def one_sec_timer():
   global off_hack
   if off_hack:
     off_hack = False;     # clear hack for lights off
-  state_machine(FIRED)    # async? is it thread safe? maybe?
+  old_state_machine(FIRED)    # async? is it thread safe? maybe?
   return
   
 def lux_timer():
@@ -236,66 +245,16 @@ def lux_timer():
   lux_thread.start()
   
 def snapshot_timer():
-  global snapshot_thread, frame1, state, settings
+  global snapshot_thread, frame1, cur_state, settings
   nimg = frame1 
-  if state == ACTIVE_ACC:
+  if cur_state == State.motion_hold:
     status = cv2.imwrite('/var/www/camera/snapshot.png',nimg) 
   else:
     gray = cv2.cvtColor(nimg, cv2.COLOR_BGR2GRAY)
     status = cv2.imwrite('/var/www/camera/snapshot.png',gray) 
   snapshot_thread = threading.Timer(60, snapshot_timer)
   snapshot_thread.start()
-  
-# --------- state machine -------------
-def state_machine(signal):
-  global motion_cnt, no_motion_cnt, active_ticks, lux_cnt
-  global settings, hmtqq, timer_thread, state, off_hack, detect_flag
-  if state == WAITING:
-    if signal == MOTION:
-      # hack ahead. Don't send active if lux_sum & cnt have been reset
-      # attempt to ignore false positives when lights go out
-      if not off_hack:
-        #settings.send_mqtt("active")
-        hmqtt.send_active(True)
-        state = ACTIVE_ACC
-      else:
-        state = ACTIVE_ACC
-    elif signal == NO_MOTION:
-      state = WAITING
-    elif signal == FIRED:
-      timer_thread = threading.Timer(settings.tick_len, one_sec_timer)
-      timer_thread.start()
-      state = WAITING
       
-  elif state == ACTIVE_ACC:
-    if signal == MOTION:
-      motion_cnt += 1
-      state = ACTIVE_ACC
-    elif signal == NO_MOTION:
-      no_motion_cnt += 1
-      state = ACTIVE_ACC
-    elif signal == FIRED:
-      active_ticks -= 1
-      if active_ticks <= 0:
-        # Timed out
-        msum = motion_cnt + no_motion_cnt
-        if msum > 0 and (motion_cnt / msum) > 0.10:   
-          active_ticks = settings.active_hold
-          state = ACTIVE_ACC
-          log("retrigger %02.2f" % (motion_cnt / (motion_cnt + no_motion_cnt)),2)
-          motion_cnt = no_motion_cnt = 0
-          state = ACTIVE_ACC
-        else:
-          #send_mqtt("inactive")
-          hmqtt.send_active(False)
-          state = WAITING
-      timer_thread = threading.Timer(settings.tick_len, one_sec_timer)
-      timer_thread.start()
-    else:
-      print("Unknown signal in state ACTIVE_ACC")
-  else:
-    print("Unknow State")
-    
 def lux_calc(frame):
     global luxcnt, luxsum, settings, curlux
     frmgray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -399,8 +358,19 @@ def shapes_detect(image, debug):
     image = read_cam(cap, dimcap)
     fc = fc + 1
   return True if n > 0 else False
-      
-def find_movement(debug):
+  
+# --------- adrian_1 movement detection ----------
+# Adrian @ pyimagesearch.com wrote/publized this. 
+
+def adrian_1_init():
+  global frame1, frame2, frattr1, frattr2, cur_state 
+  frame1 = read_cam(cap, dimcap)
+  frattr1 = lux_calc(frame1)
+  frame2 = read_cam(cap, dimcap)
+  frattr2 = lux_calc(frame2)
+  cur_state = State.motion_wait
+
+def adrian_1_movement(debug):
     global frame1, frame2, frattr1, frattr2
     global settings, dimcap, hmqtt, shape_proxy
     # detection is requested asynchronously via mqtt message sent to us
@@ -416,15 +386,15 @@ def find_movement(debug):
         else:
           rslt = shapes_detect(frame1, debug)
       if rslt:
-        st = MOTION
+        st = Event.motion
       else:
-        st = NO_MOTION
-      state_machine(st)
+        st = Event.no_motion
+      next_state(st)
       hmqtt.detect_flag = False
       hmqtt.send_detect(rslt)
       return st
       
-    motion = NO_MOTION
+    motion = Event.no_motion
     # if the light went out, don't try to detect motion
     if frattr1 and frattr2:
       diff = cv2.absdiff(frame1, frame2)
@@ -438,8 +408,8 @@ def find_movement(debug):
           
           if cv2.contourArea(contour) < settings.contour_limit:
               continue
-          motion = MOTION
-          state_machine(motion)
+          motion = Event.motion
+          next_state(motion)
           if debug:
             cv2.rectangle(frame1, (x, y), (x+w, y+h), (0, 255, 0), 2)
             cv2.putText(frame1, "Status: {}".format('Movement'), (10, 20), cv2.FONT_HERSHEY_SIMPLEX,
@@ -448,15 +418,76 @@ def find_movement(debug):
       if debug:
         cv2.drawContours(frame1, contours, -1, (0, 255, 0), 2)
         cv2.imshow("feed", frame1)
-      if motion == NO_MOTION:
-        state_machine(NO_MOTION)
+      if motion == Event.no_motion:
+        next_state(Event.no_motion)
     frame1 = frame2
     frattr1 = frattr2
     time.sleep((1.0/30.0) * settings.frame_skip)
 
     frame2 = read_cam(cap, dimcap)
     frattr2 = lux_calc(frame2)   
-    return motion == MOTION
+    return motion == Event.motion
+
+# ----- intel's movement algo
+def distMap(frame1, frame2):
+    """outputs pythagorean distance between two frames"""
+    frame1_32 = np.float32(frame1)
+    frame2_32 = np.float32(frame2)
+    diff32 = frame1_32 - frame2_32
+    norm32 = np.sqrt(diff32[:,:,0]**2 + diff32[:,:,1]**2 + diff32[:,:,2]**2)/np.sqrt(255**2 + 255**2 + 255**2)
+    dist = np.uint8(norm32*255)
+    return dist
+
+def intel_movement(debug, read_cam):
+  global settings, frame1, frame2, cur_state
+  if debug:
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    cv2.namedWindow('frame')
+    cv2.namedWindow('dist')
+    
+  frame1 = read_cam()
+  frame2 = read_cam()
+  while(True):
+    if cur_state == State.restart:
+      return True
+    frame3 = read_cam()
+    rows, cols, _ = np.shape(frame3)    
+    if debug:
+      cv2.imshow('dist', frame3)
+    dist = distMap(frame1, frame3)
+
+    frame1 = frame2
+    frame2 = frame3
+
+    # apply Gaussian smoothing
+    mod = cv2.GaussianBlur(dist, (9,9), 0)
+
+    # apply thresholding
+    _, thresh = cv2.threshold(mod, 100, 255, 0)
+
+    # calculate st dev test
+    _, stDev = cv2.meanStdDev(mod)
+    if debug:
+      cv2.imshow('dist', mod)
+      cv2.putText(frame2, "Standard Deviation - {}".format(round(stDev[0][0],0)), (70, 70), font, 1, (255, 0, 255), 1, cv2.LINE_AA)
+
+
+    if stDev > settings.mv_threshold:
+      next_state(Event.motion)
+    else:
+      next_state(Event.no_motion)
+      
+    if debug:
+      cv2.imshow('frame', frame2)
+      if cv2.waitKey(1) & 0xFF == 27:
+          break
+    time.sleep((1.0/30.0) * settings.frame_skip)
+  return False
+  cap.release()
+  cv2.destroyAllWindows()
+
+
+# ------ 
 
 def cleanup(do_windows):
   global client, cap, luxcnt, luxsum, timer_thread
@@ -472,7 +503,7 @@ def cleanup(do_windows):
 def init_timers(settings):
   # For Linux: /dev/video0 is device 0 (pi builtin eg: or first usb webcam)
   time.sleep(settings.camera_warmup)
-  timer_thread = threading.Timer(settings.tick_len, one_sec_timer)
+  timer_thread = threading.Timer(settings.tick_len, one_sec_event)
   timer_thread.start()
   lux_thread = threading.Timer(settings.lux_secs, lux_timer)
   lux_thread.start()
@@ -486,6 +517,11 @@ def read_cam(dev,dim):
   frame_n = cv2.resize(frame, dim)
   return frame_n
  
+def read_local_resize():
+  global cap, dimcap
+  ret, fr = cap.read()
+  return cv2.resize(fr, dimcap)
+  
 def remote_cam(width):
   global cap
   #log("remote_cam callback called width: %d" % width)
@@ -506,8 +542,10 @@ ap.add_argument("-s", "--system", action = 'store', nargs='?',
   default=False, help="use syslog")
 ap.add_argument("-a", "--algorithm", required=False, type=str, default=None,
   help="detection algorithm override")
+ap.add_argument("-m", "--movement", required=False, type=str, default='adrian_1',
+  help="movement algorithm override")
 args = vars(ap.parse_args())
-# fix debug levels
+# fix up debug levels
 if args['debug'] == None:
   debug_level = 3
 else:
@@ -523,10 +561,16 @@ elif debug_level == 3:
 # Lets spin it up.  
 settings = Settings(args["conf"], 
                     "/var/local/etc/mqtt-camera.json",
-                    log)
+                    log,
+                    next_state)
+
+# cmd line args override settings file.
 if args['algorithm']:
-  settings.algo = args['algorithm']
-  print("cmd line selects algo", settings.algo)
+  settings.ml_algo = args['algorithm']
+  print("cmd line selects algo", settings.ml_algo)
+if args['movement']:
+  settings.mv_algo = args['movement']
+  print("cmd line movement", settings.mv_algo)
   
 hmqtt = Homie_MQTT(settings, 
                   settings.get_active_hold,
@@ -551,6 +595,7 @@ elif settings.ml_algo == 'shapes':
     "shapes/MobileNetSSD_deploy.caffemodel")
     
 g_confidence = settings.confidence
+cur_state = State.motion_wait
 # Done with setup. 
 
 if settings.rtsp_uri:
@@ -564,14 +609,22 @@ if not  cap.isOpened():
 
 init_timers(settings)
 dimcap = (settings.camera_width, settings.camera_height)
-frame1 = read_cam(cap, dimcap)
-frattr1 = lux_calc(frame1)
-frame2 = read_cam(cap, dimcap)
-frattr2 = lux_calc(frame2)
 
-while 1:
-  motion = find_movement(show_windows)
-  if show_windows and cv2.waitKey(40) == 27:
-    break
+# now we pick between movement detectors.
+if settings.mv_algo == 'adrian_1':
+  adrian_1_init()
+  while True:
+    if cur_state == State.restart:
+      adrian_1_init()
+    foo = adrian_1_movement(show_windows)
+    if show_windows and cv2.waitKey(40) == 27:
+      break
+elif settings.mv_algo == 'intel':
+  while True:
+    restart = intel_movement(show_windows, read_local_resize)
+    if not restart:
+      break;
+else:
+  print("No Movement Algorithim chosen")
 cleanup(show_windows)
   

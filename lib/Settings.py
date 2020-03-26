@@ -7,10 +7,11 @@ import sys
 
 class Settings:
 
-  def __init__(self, etcf, varf, log):
+  def __init__(self, etcf, varf, log, st_machine):
     self.etcfname = etcf
     self.varfname = varf
     self.log = log
+    self.state_machine = st_machine
     self.mqtt_server = "192.168.1.7"   # From json
     self.mqtt_port = 1883              # From json
     self.mqtt_client_name = "detection_1"   # From json
@@ -96,6 +97,10 @@ class Settings:
     self.ml_server_ip = conf.get('ml_server_ip', None)
     self.ml_port = conf.get("ml_port", None)
     self.image_url = "http://%s:7534/camera/snapshot.png" % self.our_IP
+    self.mv_algo = conf.get('mv_algo', 'adrian_1')
+    self.mv_threshold = conf.get('mv_threshold', 10)
+    self.use_ml = conf.get('use_ml', None)
+    self.log_events = conf.get('log_events', False)
 
 
   def print(self):
@@ -107,8 +112,6 @@ class Settings:
     st['mqtt_server_ip'] = self.mqtt_server
     st['mqtt_port'] = self.mqtt_port
     st['mqtt_client_name'] = self.mqtt_client_name
-    st['topic_publish'] = self.mqtt_pub_topic
-    st['topic_control'] = self.mqtt_ctl_topic
     st['homie_device'] = self.homie_device 
     st['homie_name'] = self.homie_name
     st['camera_number'] = self.camera_number
@@ -130,6 +133,10 @@ class Settings:
     st['confidence'] = self.confidence
     st['ml_server_ip'] = self.ml_server_ip
     st['ml_port'] = self.ml_port
+    st['mv_algo'] = self.mv_algo
+    st['mv_threshold'] =self.mv_threshold
+    st['use_ml'] = self.use_ml
+    st['log_events'] = self.log_events
     str = json.dumps(st)
     return str
 
