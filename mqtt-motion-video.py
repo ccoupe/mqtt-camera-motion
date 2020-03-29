@@ -14,6 +14,8 @@ from threading import Lock
 import socket
 import csv
 import atexit
+import logging
+import logging.handlers
 
 from lib.Constants import State, Event
 from lib.Settings import Settings
@@ -21,6 +23,15 @@ from lib.Homie_MQTT import Homie_MQTT
 from lib.Algo import Algo
     
 import rpyc
+
+class LuxLogFilter(logging.Filter):
+  def filter(self, record):
+    global curlux, luxsum, luxcnt
+    record.lux = "%3d" % curlux
+    record.sum = "%5.3f" % (luxsum/luxcnt)
+    return True
+  
+
 
 # globals - yes it is a ton of globals
 settings = None
@@ -59,7 +70,7 @@ use_syslog = False
 # to the end of the function
 def next_state(nevent):
   global cur_state, hmqtt, settings, motion_cnt, timer_thread, logwriter
-  global detector_thread, sm_lock
+  global detector_thread, sm_lock, applog
   sm_lock.acquire()
   lc = cur_state
   next_st = None
@@ -177,7 +188,7 @@ def next_state(nevent):
   elif nevent == Event.lights_out:
     # Happens when external process (like hubitat - turns of the switch
     # associated with our motion sensor. Done in Motion Lighting App.
-    log(Event.lights_out)
+    applog.debug(str(Event.lights_out))
     if cur_state == State.disabled:
       next_st = State.disabled
     elif cur_state == State.motion_wait:
@@ -206,7 +217,7 @@ def next_state(nevent):
   # Finally ;-)
   cur_state = next_st
   if cur_state == None:
-    print("event", nevent, "old", lc, "next", cur_state)
+    applog.error("event %s old %s next %s", str(nevent), str(lc), str(cur_state))
     exit()
   sm_lock.release()
   return cur_state
@@ -214,32 +225,8 @@ def next_state(nevent):
 def one_sec_event():
   next_state(Event.tick)   
   return
-  
-def log(msg, level=2):
-  global luxcnt, luxsum, curlux, debug_level, use_syslog, logwriter
-  if level > debug_level:
-    return
-  if use_syslog:
-    logmsg = "%-20.20s%3d %- 5.2f" % (msg, curlux, luxsum/luxcnt)
-  else:
-    (dt, micro) = datetime.now().strftime('%H:%M:%S.%f').split('.')
-    dt = "%s.%03d" % (dt, int(micro) / 1000)
-    logmsg = "%-14.14s%-40.40s%3d %- 5.2f" % (dt, msg, curlux, luxsum/luxcnt)
-  if logwriter:
-    (dt, micro) = datetime.now().strftime('%H:%M:%S.%f').split('.')
-    dt = "%s.%03d" % (dt, int(micro) / 1000)
-    logwriter.writerow([dt, round(curlux,2), round(luxsum/luxcnt,2), msg])
-  print(logmsg, flush=True)
- 
-# ---------  Timer functions -----------
-'''
-def one_sec_timer():
-  global off_hack, sm_lock
-  if off_hack:
-    off_hack = False;     # clear hack for lights off
-  old_state_machine(FIRED)    # async? is it thread safe? maybe?
-  return
-'''  
+
+# ---------  Timer functions -----------  
 
 def reset_timer():
   global timer_thread
@@ -248,9 +235,8 @@ def reset_timer():
   
 def lux_timer():
   global settings, curlux, lux_thread
-  msg = "lux=%d" %(curlux)
   #settings.client.publish(settings.mqtt_pub_topic, msg)
-  log(msg, 2)
+  applog.info("lux=%d", curlux)
   lux_thread = threading.Timer(settings.lux_secs, lux_timer)
   lux_thread.start()
   
@@ -273,7 +259,7 @@ def lux_calc(frame):
     ok = True
     # check for lights out situation
     if curlux  < ((luxsum / luxcnt) * settings.lux_level):
-      log("LUX STEP: %d" % curlux, 2)
+      applog.info("LUX STEP: %d", curlux)
       luxsum = curlux
       luxcnt = 1
       ok = False
@@ -357,7 +343,7 @@ def adrian_1_movement(debug):
 
 # ----- intel's movement algo
 def intel_init():
-    log("intel_init")
+    applog.debug("intel_init")
     
 def distMap(frame1, frame2):
     """outputs pythagorean distance between two frames"""
@@ -426,9 +412,8 @@ def cleanup():
     csvfile.close()
   if show_windows:
     cv2.destroyAllWindows()
-  #video_dev.stop()
   hmqtt.client.loop_stop()
-  print("average of lux mean ", luxsum/luxcnt)
+  applog.info("average of lux mean ", luxsum/luxcnt)
   timer_thread.cancel()
   return
 
@@ -467,124 +452,150 @@ def remote_cam(width):
 # read frames and discard for 'sec' seconds
 # note: even the pi0 can do 30fps if we don't process them
 def camera_spin(sec):
-  global video_dev
-  log("begin spin")
+  global video_dev, applog
+  applog.debug("begin spin")
   for n in range(sec * 30):
     video_dev.read()
-  log("end spin")
+  applog.debug("end spin")
   
-def build_ml_dict():
-  global ml_dict, settings
+def build_ml_dict(settings):
   ml_dict['Cnn_Face'] = Algo('Cnn_Face', settings)
   ml_dict['Cnn_Shapes'] = Algo('Cnn_Shapes', settings)
   ml_dict['Haar_Face'] = Algo('Haar_Face', settings)
   ml_dict['Haar_FullBody'] = Algo('Haar_FullBody', settings)
   ml_dict['Haar_UpperBody'] = Algo('Haar_UpperBody', settings)
   ml_dict['Hog_People'] = Algo('Hog_People', settings)
+  return ml_dict
   
-# process cmdline arguments
-ap = argparse.ArgumentParser()
-ap.add_argument("-c", "--conf", required=True, type=str,
-	help="path and name of the json configuration file")
-ap.add_argument("-d", "--debug", action='store', type=int, default='3',
-  nargs='?', help="debug level, default is 3")
-ap.add_argument("-s", "--system", action = 'store', nargs='?',
-  default=False, help="use syslog")
-ap.add_argument("-a", "--algorithm", required=False, type=str, default=None,
-  help="detection algorithm override")
-ap.add_argument("-m", "--movement", required=False, type=str, default='adrian_1',
-  help="movement algorithm override")
-ap.add_argument("-l", "--log", required=False, action = "store_true", default=False,
-  help="log events to file")
-ap.add_argument("-r", "--remote", required=False, action = "store_true", default=False,
-  help="log events to file")
-args = vars(ap.parse_args())
-
-# fix up debug levels
-if args['debug'] == None:
-  debug_level = 3
-else:
-  debug_level = args['debug']
-if args['system'] == None:
-  use_syslog = True
-  debug_level =1
-  show_windows = False;
-  # setup syslog ?
-elif debug_level == 3:
-  show_windows = True
-  
-
-# log file
 logwriter = None
 csvfile = None
-if args['log']:
-  csvfile = open('events.csv', 'w', newline='')
-  logwriter = csv.writer(csvfile, delimiter=',', quotechar='|')
-  print("logging...")
-
-# Lets spin it up.  
-settings = Settings(args["conf"], 
-                    "/var/local/etc/mqtt-camera.json",
-                    log,
-                    next_state)
-
-# cmd line args override settings file.
-if args['algorithm']:
-  settings.ml_algo = args['algorithm']
-  print("cmd line algo selection:", settings.ml_algo)
-if args['movement']:
-  settings.mv_algo = args['movement']
-  print("cmd line movement selection:", settings.mv_algo)
-if args['remote']:
-  settings.use_ml = 'remote'
-  
-hmqtt = Homie_MQTT(settings, 
-                  settings.get_active_hold,
-                  settings.set_active_hold)
-settings.print()
-if logwriter:
-  logwriter.writerow([settings.settings_serialize])
-  
-# setup ml_dict
 ml_dict = {}
-build_ml_dict()
+video_dev = None
 
-cur_state = State.motion_wait
-dimcap = (settings.camera_width, settings.camera_height)
-# Almost Done with setup. Maybe.
-
-if settings.rtsp_uri:
-  video_dev = cv2.VideoCapture(settings.rtsp_uri)
-else:
-  if settings.camera_number < 0:
-    #video_dev = VideoStream(usePiCamera=True, resolution = dimcap).start()
-    video_dev = cv2.VideoCapture(settings.camera_number)
-  else:
-    #video_dev = VideoStream(src=settings.camera_number, resolution = dimcap).start()
-    video_dev = cv2.VideoCapture(settings.camera_number)
-
-init_timers(settings)
-atexit.register(cleanup)
-# now we pick between movement detectors and start the choosen one
-if settings.mv_algo == 'adrian_1':
-  while True:
-    adrian_1_init()
-    while True:
-      adrian_1_movement(show_windows)
-      if cur_state == State.restart:
-        #log("restarting adrian_1 loop")
-        break
-    if show_windows and cv2.waitKey(40) == 27:
-      break
-elif settings.mv_algo == 'intel':
-  while True:
-    intel_init()
-    while True:
-      intel_movement(show_windows, read_local_resize)
-      if cur_state == State.restart:
-        log("restarting intel loop")
-        breakl
-else:
-  print("No Movement Algorithm chosen")
-cleanup()
+def main(args=None):
+  global logwriter, csvfile, ml_dict, applog, cur_state, dimcap, video_dev
+  global settings, hmqtt, show_windows
+  # process cmdline arguments
+  ap = argparse.ArgumentParser()
+  loglevels = ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL')
+  ap.add_argument("-c", "--conf", required=True, type=str,
+    help="path and name of the json configuration file")
+  ap.add_argument("-d", "--debug", action='store', type=bool, default=False,
+    nargs='?', help="show rectangles - no remote ml")
+  ap.add_argument("-s", "--syslog", action = 'store_true',
+    default=False, help="use syslog")
+  ap.add_argument("-a", "--algorithm", required=False, type=str, default=None,
+    help="detection algorithm override")
+  ap.add_argument("-m", "--movement", required=False, type=str,
+    help="movement algorithm override")
+  ap.add_argument("-e", "--events", required=False, action = "store_true", default=False,
+    help="log events to events.csv file")
+  ap.add_argument("-r", "--remote", required=False, action = "store_true", default=False,
+    help="log events to file")
+  ap.add_argument("-p", "--port", action='store', type=int, default='4466',
+    nargs='?', help="server port number, 4466 is default")
+  ap.add_argument('-l', '--log', default='DEBUG', choices=loglevels)
+  args = vars(ap.parse_args())
   
+  # logging setup
+  applog = logging.getLogger('mqttcamera')
+  #applog.setLevel(args['log'])
+  if args['syslog']:
+    applog.setLevel(logging.DEBUG)
+    handler = logging.handlers.SysLogHandler(address = '/dev/log')
+    # formatter for syslog (no date/time or appname. Just  msg, lux, luxavg
+    formatter = logging.Formatter('%(name)s-%(levelname)-5s: %(message)-30s %(lux)s %(sum)s')
+    handler.setFormatter(formatter)
+    f = LuxLogFilter()
+    applog.addFilter(f)
+    applog.addHandler(handler)
+  else:
+    logging.basicConfig(level=logging.DEBUG,datefmt="%H:%M:%S",format='%(asctime)s %(message)-40s %(lux)s %(sum)s')
+    f = LuxLogFilter()
+    applog.addFilter(f)
+    
+  show_windows = False;
+  
+  # state_machine log file
+  logwriter = None
+  csvfile = None
+  if args['events']:
+    csvfile = open('events.csv', 'w', newline='')
+    logwriter = csv.writer(csvfile, delimiter=',', quotechar='|')
+    print("logging...")
+  
+  # Lets spin it up.  
+  settings = Settings(args["conf"], 
+                      "/var/local/etc/mqtt-camera.json",
+                      applog,
+                      next_state)
+  
+  # cmd line args override settings file.
+  if args['algorithm']:
+    settings.ml_algo = args['algorithm']
+    applog.debug("cmd line algo override: %s", settings.ml_algo)
+  if args['movement']:
+    settings.mv_algo = args['movement']
+    applog.debug("cmd line movement override: %s", settings.mv_algo)
+  if args['remote']:
+    settings.use_ml = 'remote'
+  if args['port']:
+    settings.ml_port = args['port']
+  if args['debug']:
+    show_windows = True
+    settings.use_ml = 'local'
+    
+  hmqtt = Homie_MQTT(settings, 
+                    settings.get_active_hold,
+                    settings.set_active_hold)
+  settings.print()
+  settings.log = applog
+  if logwriter:
+    logwriter.writerow([settings.settings_serialize])
+    
+  # setup ml_dict
+  ml_dict = build_ml_dict(settings)
+  
+  cur_state = State.motion_wait
+  dimcap = (settings.camera_width, settings.camera_height)
+  # Almost Done with setup. Maybe.
+  
+  if settings.rtsp_uri:
+    video_dev = cv2.VideoCapture(settings.rtsp_uri)
+  else:
+    if settings.camera_number < 0:
+      #video_dev = VideoStream(usePiCamera=True, resolution = dimcap).start()
+      video_dev = cv2.VideoCapture(settings.camera_number)
+    else:
+      #video_dev = VideoStream(src=settings.camera_number, resolution = dimcap).start()
+      video_dev = cv2.VideoCapture(settings.camera_number)
+  
+  init_timers(settings)
+  atexit.register(cleanup)
+  # now we pick between movement detectors and start the choosen one
+  if settings.mv_algo == 'adrian_1':
+    while True:
+      adrian_1_init()
+      while True:
+        adrian_1_movement(show_windows)
+        if cur_state == State.restart:
+          #log("restarting adrian_1 loop")
+          break
+      if show_windows and cv2.waitKey(40) == 27:
+        break
+  elif settings.mv_algo == 'intel':
+    while True:
+      intel_init()
+      while True:
+        intel_movement(show_windows, read_local_resize)
+        if cur_state == State.restart:
+          log("restarting intel loop")
+          breakl
+  else:
+    print("No Movement Algorithm chosen")
+  cleanup()
+
+if __name__ == '__main__':
+  sys.exit(main())
+
+   
