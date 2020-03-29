@@ -119,7 +119,7 @@ class Algo:
     # show the output frame
     if debug:
       cv2.imshow("Detect", frame)
-    #self.log("shapes = %d" % n)
+    self.log.info("shapes = %d" % n)
     return (n > 0, n)
 
   # ----- haar detectors

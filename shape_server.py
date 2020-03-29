@@ -11,6 +11,7 @@ from datetime import datetime
 import time,threading, sched
 import rpyc
 from lib.Algo import Algo
+import logging
 
 debug = False;
 
@@ -48,22 +49,28 @@ class MyService(rpyc.Service):
       etm = time.time()
       pt = eptm - sptm
       ct = etm - stm
-      elstr = "%3.2f%%" % ((pt / ct) * 100)
-      print(self.client_ip, name, result, round(pt, 4), round(ct, 4), elstr)
+      #elstr = "%3.2f%%" % ((pt / ct) * 100)
+      #print(self.client_ip, name, result, round(pt, 4), round(ct, 4), elstr)
+      log.info('%s %s %s %2.4f %2.4f %3.2f%%', self.client_ip, name, str(result),
+          pt, ct, (pt / ct) * 100)
       return (result, n)
     else:
-      print("Call for unknown algo:", name)
+      log.error("Call for unknown algo:", name)
       return (False, "unknown algo: " % name)
 
     
 # process args - port number, 
 ap = argparse.ArgumentParser()
-ap.add_argument("-p", "--port", action='store', type=int, default='4433',
-  nargs='?', help="server port number, 4433 is default")
+ap.add_argument("-p", "--port", action='store', type=int, default='4466',
+  nargs='?', help="server port number, 4466 is default")
 args = vars(ap.parse_args())
 
-# create a bunch of Objects for each.
-settings = Settings(print)
+# logging setup
+logging.basicConfig(level=logging.DEBUG,format='%(asctime)s %(message)s')
+log = logging.getLogger('ML_Shapes')
+
+# create a bunch of Objects for each algo
+settings = Settings(log)
 ml_dict = {}
 ml_dict['Cnn_Face'] = Algo('Cnn_Face', settings)
 ml_dict['Cnn_Shapes'] = Algo('Cnn_Shapes', settings)

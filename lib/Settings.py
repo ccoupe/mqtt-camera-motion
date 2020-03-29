@@ -4,6 +4,7 @@ import socket
 from uuid import getnode as get_mac
 import os 
 import sys
+import logging
 
 class Settings:
 
@@ -64,11 +65,11 @@ class Settings:
         self.load_settings(self.varfname)
         print("Settings overridden with", self.varfname)
     else:
-      print("Settings from", self.etcfname)
+      self.log.info("Settings from %s", self.etcfname)
       
 
   def load_settings(self, fn):
-    print("loading settings from ",fn)
+    self.log.debug("loading settings from %s",fn)
     conf = json.load(open(fn))
     self.mqtt_server = conf.get("mqtt_server_ip", None)
     self.mqtt_port = conf.get("mqtt_port", 1883)
@@ -104,8 +105,8 @@ class Settings:
 
 
   def print(self):
-    print("==== Settings ====")
-    print(self.settings_serialize())
+    self.log.info("==== Settings ====")
+    self.log.info("%s", self.settings_serialize())
   
   def settings_serialize(self):
     st = {}
@@ -190,6 +191,7 @@ class Settings:
     return self.active_hold
     
   def set_active_hold(self, v):
+    global applog
     #print("set_active_hold", v)
     if v < 5:
       v = 5
@@ -200,5 +202,5 @@ class Settings:
       f = open(self.varfname,"w+")
       f.write(self.settings_serialize())
       f.close()
-    print("leaving set_active_hold")
+    self.log.debug("leaving set_active_hold")
 
