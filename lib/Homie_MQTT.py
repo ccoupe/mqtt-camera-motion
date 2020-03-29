@@ -11,7 +11,7 @@ class Homie_MQTT:
 
   def __init__(self, settings, getCb, setCb):
     self.settings = settings
-    self.log = logging.getLogger('mqttcamera')
+    self.log = settings.log
     self.getCb = getCb
     self.setCb = setCb
     self.detect_flag = False

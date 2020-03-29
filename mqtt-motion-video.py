@@ -15,6 +15,7 @@ import socket
 import csv
 import atexit
 import logging
+import logging.handlers
 
 from lib.Constants import State, Event
 from lib.Settings import Settings
@@ -22,6 +23,15 @@ from lib.Homie_MQTT import Homie_MQTT
 from lib.Algo import Algo
     
 import rpyc
+
+class LuxLogFilter(logging.Filter):
+  def filter(self, record):
+    global curlux, luxsum, luxcnt
+    record.lux = "%3d" % curlux
+    record.sum = "%5.3f" % (luxsum/luxcnt)
+    return True
+  
+
 
 # globals - yes it is a ton of globals
 settings = None
@@ -215,31 +225,7 @@ def next_state(nevent):
 def one_sec_event():
   next_state(Event.tick)   
   return
-'''  
-# TODO: won't need this after everything is using python logging.
-def log(msg, level=2):
-  global luxcnt, luxsum, curlux, debug_level, use_syslog, logwriter, applog
-  if applog:
-    applog.info("%-40.40s%3d %- 5.2f", msg, curlux, luxsum/luxcnt)
-    if logwriter:
-      (dt, micro) = datetime.now().strftime('%H:%M:%S.%f').split('.')
-      dt = "%s.%03d" % (dt, int(micro) / 1000)
-      logwriter.writerow([dt, round(curlux,2), round(luxsum/luxcnt,2), msg])
-  else:
-    if level > debug_level:
-      return
-    if use_syslog:
-      logmsg = "%-20.20s%3d %- 5.2f" % (msg, curlux, luxsum/luxcnt)
-    else:
-      (dt, micro) = datetime.now().strftime('%H:%M:%S.%f').split('.')
-      dt = "%s.%03d" % (dt, int(micro) / 1000)
-      logmsg = "%-14.14s%-40.40s%3d %- 5.2f" % (dt, msg, curlux, luxsum/luxcnt)
-    if logwriter:
-      (dt, micro) = datetime.now().strftime('%H:%M:%S.%f').split('.')
-      dt = "%s.%03d" % (dt, int(micro) / 1000)
-      logwriter.writerow([dt, round(curlux,2), round(luxsum/luxcnt,2), msg])
-    print(logmsg, flush=True)
-''' 
+
 # ---------  Timer functions -----------  
 
 def reset_timer():
@@ -494,9 +480,9 @@ def main(args=None):
   loglevels = ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL')
   ap.add_argument("-c", "--conf", required=True, type=str,
     help="path and name of the json configuration file")
-  ap.add_argument("-d", "--debug", action='store', type=int, default='3',
-    nargs='?', help="debug level, default is 3")
-  ap.add_argument("-s", "--system", action = 'store', nargs='?',
+  ap.add_argument("-d", "--debug", action='store', type=bool, default=False,
+    nargs='?', help="show rectangles - no remote ml")
+  ap.add_argument("-s", "--syslog", action = 'store_true',
     default=False, help="use syslog")
   ap.add_argument("-a", "--algorithm", required=False, type=str, default=None,
     help="detection algorithm override")
@@ -512,21 +498,23 @@ def main(args=None):
   args = vars(ap.parse_args())
   
   # logging setup
-  logging.basicConfig(level=logging.DEBUG,format='%(asctime)s %(message)s')
   applog = logging.getLogger('mqttcamera')
-  applog.setLevel(args['log'])
-  # fix up debug levels
-  if args['debug'] == None:
-    debug_level = 3
+  #applog.setLevel(args['log'])
+  if args['syslog']:
+    applog.setLevel(logging.DEBUG)
+    handler = logging.handlers.SysLogHandler(address = '/dev/log')
+    # formatter for syslog (no date/time or appname. Just  msg, lux, luxavg
+    formatter = logging.Formatter('%(name)s-%(levelname)-5s: %(message)-30s %(lux)s %(sum)s')
+    handler.setFormatter(formatter)
+    f = LuxLogFilter()
+    applog.addFilter(f)
+    applog.addHandler(handler)
   else:
-    debug_level = args['debug']
-  if args['system'] == None:
-    use_syslog = True
-    debug_level =1
-    show_windows = False;
-    # setup syslog ?
-  elif debug_level == 3:
-    show_windows = True
+    logging.basicConfig(level=logging.DEBUG,datefmt="%H:%M:%S",format='%(asctime)s %(message)-40s %(lux)s %(sum)s')
+    f = LuxLogFilter()
+    applog.addFilter(f)
+    
+  show_windows = False;
   
   # state_machine log file
   logwriter = None
@@ -553,6 +541,9 @@ def main(args=None):
     settings.use_ml = 'remote'
   if args['port']:
     settings.ml_port = args['port']
+  if args['debug']:
+    show_windows = True
+    settings.use_ml = 'local'
     
   hmqtt = Homie_MQTT(settings, 
                     settings.get_active_hold,
