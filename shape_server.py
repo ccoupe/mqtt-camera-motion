@@ -33,7 +33,6 @@ class MyService(rpyc.Service):
     nparr = np.fromstring(imagestr, np.uint8)
     frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     mlobj = ml_dict.get(name, None)
-    #print("request from", self.client_ip)
     stm = time.time()
     sptm = time.process_time()
     if mlobj:
@@ -49,8 +48,6 @@ class MyService(rpyc.Service):
       etm = time.time()
       pt = eptm - sptm
       ct = etm - stm
-      #elstr = "%3.2f%%" % ((pt / ct) * 100)
-      #print(self.client_ip, name, result, round(pt, 4), round(ct, 4), elstr)
       log.info('%s %s %s %2.4f %2.4f %3.2f%%', self.client_ip, name, str(result),
           pt, ct, (pt / ct) * 100)
       return (result, n)

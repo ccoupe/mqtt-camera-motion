@@ -8,13 +8,12 @@ done: Boot jetson - do the minimal unix setup
 done: fixed ip 192.168.1.4
 done: mount ssd
 done: boot and use ssd for most of system. like the pi4
-====> mount nfs Ok manually. Not from system files.
+done: mount nfs Ok manually. Not from system files.
       /etc/fstab not working.
       systemd mounting fails too.
       unminimize'd. 
 ----> /etc/hosts, 
 ----> copy ssh keys from bronco, mini
-----> Install the Jetpack SDK ? Think it's already installed.
 ----> Play with samples?
 done: build Ruby 2.5.5 -> /usr/local
 done: done enough. build Shoes (minlin)
@@ -22,3 +21,5 @@ done: done enough. build Shoes (minlin)
         gems yajl-ruby, picky, byebug, chipmunk, sqlite3, nokogiri
       unknown arch - RUBY_PLATFORM => 'aarch64-linux'
 done: build opencv 4, with cuda... Pyimage Article.
+
+Wow:  https://github.com/goruck/smart-zoneminder

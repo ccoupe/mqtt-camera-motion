@@ -279,6 +279,7 @@ def detector_general():
   read_local_resize()
   mlobj = ml_dict[settings.ml_algo]
   if settings.use_ml == 'remote':
+    # TODO: restart if server is offline
     result, n = mlobj.proxy.root.detectors(settings.ml_algo, False, settings.confidence, image_serialize(frame1))
   else:
     result, n = mlobj.proxy(settings.ml_algo, show_windows, settings.confidence, frame1)

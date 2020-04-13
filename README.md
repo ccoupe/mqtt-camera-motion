@@ -1,5 +1,5 @@
 # Video motion detection for Linux and MQTT. 
-  Uses python, USB webcams or Raspberry pi cameras.
+  Uses python,opencv, USB webcams or Raspberry pi cameras.
 
 ## Purpose
 This program reads from a USB wecam or Raspberry's camera and when it detects
@@ -83,7 +83,7 @@ You really want to use the following link instead
 For Raspberry Pi's (https://solarianprogrammer.com/2019/09/17/install-opencv-raspberry-pi-raspbian-cpp-python-development/)[(follow these instructions]
 
 If you happen to have a Raspberry 4 with 4MB, it compiles much faster and if
-you are clever that can be used. Far too off topic.
+you are clever that can be used, how to do that is off topic.
 
 Ubuntu linux has opencv version 3.x in its repo but we want 4.x (4.1.2+) so we have to build from source.
 It's not too difficult once you have a the cmake settings. 
@@ -91,59 +91,146 @@ It's not too difficult once you have a the cmake settings.
 TODO: INSERT ubuntu cmake command line here
 
 ### Motion-Video Manual Configuration.
-Try it manually to see how well it works for you and to get your configuation
-workable before doing a system install. Create a json file. For example here is
-`touchpi.json`.
+There are a large number of configuration settings.
+l For now, we only want the first five. mqtt_server_ip, mqtt_port are
+the location of your MQTT broker. Every device connecting should have a unique
+id (a string), so make up short-ish something for mqtt_client_name
+
+`trumpy.json`:m
 ```sh
 {
-  "server_ip": "192.168.1.7",
-  "port": 1883,
-  "client_name": "touchpi_camera",
-  "topic_publish": "cameras/family/touchpi",
-  "topic_control": "cameras/family/touchpi_control",
-  "camera_number": -1,
-  "camera_height": 640,
-  "camera_width": 480,
+  "mqtt_server_ip": "192.168.1.7",
+  "mqtt_port": 1883,
+  "mqtt_client_name": "trumpy_cam",
+  "homie_device": "trumpy_cam",
+  "homie_name": "Pi3 Camera",
+  "camera_number": 0,
+  "camera_height": 480,
+  "camera_width": 640,
   "camera_warmup": 2.5,
   "frame_skip": 5,
-  "lux_level": 0.50,
+  "lux_level": 0.60,
   "contour_limit": 900,
   "tick_len": 5,
   "active_hold": 10,
-  "lux_secs": 300
+  "lux_secs": 300,
+  "settings_rw": false,
+  "snapshot": true,
+  "mv_algo": "adrian_1",
+  "mv_threshold": 10,
+  "ml_server_ip": "192.168.1.4",
+  "ml_port": 4433,
+  "ml_algo": "Cnn_Shapes",
+  "confidence": 0.4,
+  "use_ml": "remote"
 }
 ```
-We'll get to the parameters later but the important one at this point is the
-camera_number. Enter 0 to use /dev/video0, 1 for /dev/video1, etc. 
-Sometimes, -1 works better than 0. It's what I use. 
-You want to edit the file to use the IP number of your MQTT server and
-pick a client name (to MQTT) and a publish topic and a control topic. You can
-modify the others later. 
+The first five deal with MQTT. 'mqtt_server_ip', 'mqtt_port' are
+the location of your MQTT broker. Every device connecting should have a unique
+id (a string), so make up short-ish something for mqtt_client_name. 
+We attempt to use the Homie 3 compatible method of describing a device. 
+All devices have a toplevel name, in the example it is 'p3_touch'. 'homie_name'
+is a long form description. It's required but not used.  When mqtt-vision.py
+starts up it creates corresponding topics at the MQTT broker (and many more under
+that homie_device) 
+
+All the other settings in the json file deal with how our camera behaves. Only
+a few of them are known to Hubitat. 'camera_number'. Enter 0 to use /dev/video0, 1 for /dev/video1, etc. 
+Sometimes, -1 works better than 0. I use -1. It's a feature of the opencv code 
+that maybe I shouldn't use. 
+
+Camera height and width resize the frame. Full size can slows things down 
+and truth be told you don't want 'more pixels are better'. You should 
+pick something that keeps the aspect ratio correct, the settings above don't, but
+they work OK. 
+
+Frame_skip is the number of frames to skip between samples. You can consume
+enormous amounts of cpu running the camera as fast as it run. How much is camera
+and processor dependent. 5 frames over 30 is 1/6 second and a resonable rate
+for a Pi3. Contrary to common belief you don't want a supersensitve motion detector.
+I set in to 10 when using a Webcam because they take more processing power.
+
+Camera_warmup is the number of seconds to wait after application startup.
+You'd have to really care about these things to vary it below 1. It's only used
+for the very first frame. 
+
+Lux_level is not used anymore. 
+
+Lux_secs is how often the 'average' lux level is reported. Nothing really
+uses our definition of Lux and it's not reported to Hubitat so consider
+mostly useless info. 
+
+tick_len is used in conjuntion with active_hold. tick_len is in seconds.
+active_hold is the number of 'ticks'to keep an'active' motion sensor as active
+before going 'inactive'. Active hold can be set by hubitat and when run as
+a simple motion sensor is your way of controlling how chatty the device is.
+10 is a good number.  If motion happens in the 50 second (5 x 10) period
+then the 50 second countdown begins anew. 
+
+settings_rw is discouraged. If set true then any setting changes made by
+hubitat is store in /var/lib/... and re-read at startup. If you make changes
+you like to active_hold, just modify the json file and restart. It's nasty
+code and should disapper and hubitat will change it back to Hubitat's
+preference setting. 
+
+snapshot: True means take a picture every minute and store in /var/www/camera/snapshot.jpg
+If you are running a normal web server on the same computer then that is not an ideal place and you
+may want to disable that, change the code or play some symlink games. The picture can be retrieved
+and placed in a hubitat dashboard. If the motion sensor was signalling 'inactive' then
+the picture will be grayscale. If active status then it will be in color. it's Eye candy and I
+like it just enough to keep it around but not enough to fix some obvious problems.
+
+'mv_algo' may be 'adrian_1' or 'intel'. It defaults to 'adrian_1' There are
+two methods available for determining 'motion' or 'movement' (hence the mv_)
+I borrowed both of them, adrian_1 from Adrian at PyImageSearch.com and 'intel' from
+an online traing course at Intel.com.  I use 'adrian_1' but there might be situations
+where 'intel' works better. You should look at the code in mqtt-motion-video.py
+if you are curious.
+
+'contour_limit' is only used by the adrian_1 scheme to find the points of interest for determining
+movement. The comparsion is `contourArea < contour_limit` triggers a possible `active`. My
+webcam, 3 feet from me uses a `"contour_limit": 900,` 
+Your mileage may vary. 700 wasn't good enough for me. Upper limit is 1800. I Think
+
+mv_thresh_hold is only used by the intel scheme. You'd have play with it
+to determine how good the default number is. 
+
+use_ml: can be, None, Remote or Local. None means there won't be any
+machine learning processes run. Local means they will be run on this computer
+and remote means they will be run at the 'ml_server_ip' which is listening on
+'ml_port' The ML/AI  will be covered in more detail below after installation.
+
+'ml_algo' see ML/AI section
+'confidence' set ML/AI section
+
+You don't have to get the configuation 100% correct just to get going.
+It's really better to do the minimum (set the first 5 and use defaults)
+Then see how it works for you. 
 
 Run the script from the terminal and see what you get:
 ```
-python3 mqtt-vision.py -d3 -c touchpi.json
+python3 mqtt-vision.py -c touchpi.json
 ```
-the -d3 mean debug. -d3 only works from a terminal launch because it puts
-up a window for the camera frames and draws detection rectangles on it. you need
-the visual to fine tune things for the best performance. -d2 provides more info than
--d1 which just logs the active/inactive mqtt sends.
+It prints messages on the console to display settings and info
+about what it's doing. Obviously, you have move into and out of camera view
+and see what happens, keeping in mind the tick_len and active_hold settings.
+
+Now you need to install the Hubitat driver so it can talk to MQTT and the
+camera code. That is described below, after the System Install.
 
 ### System Install
 
+Once the code is working well enough in your tests, it needs to be installed
+in the system and startup when the system boots.
+
 We use the systemd facility. This allows a lot chances for mis-typing. Nothing
 fatal that can't be fixed.  I'm going to use the name 'touchpi' because it's one
-of the raspberry pi's I have with a a camera and this one has a touch screen.
+of the raspberry pi's I have with a a camera (and a touch screen).
 
-Create a directory for the configuration file. I'll use /usr/local/etc/mqtt-camera
-Copy your working json file.
+Create a directory in the system space and copy.
 ```
-sudo mkdir -p /usr/local/etc/mqtt-camera
-sudo cp touchpi.json /usr/local/etc/mqtt-camera
-```
-Create a directory for the python code. I'll use /usr/local/lib Copy to it.
-```
-sudo cp mqtt-motion-video.py /usr/local/lib/
+sudo mkdir -p /usr/local/lib/mqttcamera
+sudo cp -a * /usr/local/lib/mqttcamera
 ```
 We want a simple webserver on 'touchpi' that can serve a snapshot image. We
 need a directory for the image. The path is hardcoded into the python scripts
@@ -151,14 +238,15 @@ need a directory for the image. The path is hardcoded into the python scripts
 sudo mkdir -p /var/www/camera
 ```
 We need a launch script - `mqttcamera.sh` that starts the http server and
-the motion
+the motionsensor code
 ```
 #!/usr/bin/env bash
 ip=`hostname -I`
 python3 -m http.server 7534 --bind ${ip} --directory /var/www &
-/usr/local/lib/mqtt-motion-video.py --system -c /usr/local/etc/mqtt-camera/touchpi.j
-son
+cd /usr/local/lib/mqttcamera/
+python3 mqtt-motion-video.py --system -c trumpy.json
 ```
+Note; the '--system' means we will log to syslog (/var/log/syslog). 
 Change the name of the json file to fit your machine and make that script executable with a
 ```
 chmod +x mqttcamera.sh
@@ -188,6 +276,7 @@ sudo systemctl start mqttcamera
 That should get it running now and for every reboot. To stop it use `sudo systemctl stop mqttcamera`
 If you want to disable it from starting up at boot time then do `sudo systemctl disable mqttcamera`
 
+To watch the syslog, from any terminal `tail -f /var/log/syslod`
 
 ### Hubitat driver install
  
@@ -197,28 +286,37 @@ The Hubitat driver file is `mqtt-motion-video.groovy`. Using a web browser, load
 page for your local hub, Select `< > Drivers Code`. Select `New Driver` and copy/paste
 the contents of mqtt-motion-video.groovy into the browser page. Click `Save` and if there
 are no errors then go to the 'Devices' page and `Add Virtual Device`, name it and from the
-drop down `Type*` list select the `MQTT Motion Video` (it's way down at the bottom of
+drop down `Type*` list select the `MQTT Motion Video V3` (it's way down at the bottom of
 the list).
 
 You'll get a page for setting up the device. You **must** fill in the MQTT server and the
-two topics. Topic to Subscribe is the the topic that the MQTT camera device is publishing too.
-The Topic to Publish is the the one that the MQTT device is using for control. 
+two topics. Topic to Subscribe is the the topic that the MQTT camera device using. For the
+sample json file above, it would be 'homie/trumpy_cam/motionsensor'
+The Additional sub-topic for property is 'active_hold'. You will want to enable logging
+if this is the first time you've used the driver/camera pair. Enable the 'Camera Hack"
+and leave the ML_Detection alone (No Selection)
 
-![hubitat-pref](https://user-images.githubusercontent.com/222691/70491917-e9b12d80-1abf-11ea-9805-4fe22b07a1d2.png)
+Get a Hubitat log page in new browers tab/window. Push the Save Preferences button
+and switch to the log pages. You should see messages that it's 'connected' and 'subscribed'
+Then switch back to the device page an up top and to the right should be 'Current Status'.
+Go move in and out of the camera view and see if the Current Status changes. 
 
-You can change some of those other preferences like `frame_skip` at a later time and when you save them
-the Hubitat driver will attempt to set those on the MQTT device. This will not be permanent. They
-will revert back to the devices defaults when it reboots. We do not use user names and passwords
-for the mqtt server. Using the Configure button also updates the MQTT device and is prefered. 
+Now you can use it a a motion sensor in Hubitat. I find it useful to create
+a motion zone with a PIR motion sensor and a Camera. PIR's work in the dark
+and good for getting the zone 'active' and the camera excels at keeping the zone
+active. A pair made in Heaven.
 
-There is one more thing to do. You may have noticed that the Hubitat Device has On and Off
+The Camera Hack: You may have noticed that the Hubitat Device has On and Off
 buttons. Often, when motion is inactive and your motion rules turns off the light for the area
-then the sudden darkness will trigger the detector to go active resulting in a loop that never
-turns off the lights. It's very camera and light dependent. The off button is there to 
-fix the issue! In the Motion App rule, select the `Options for Additional Sensors, Lights-Off and Off options`
+then the sudden darkness will trigger the detector to go active. Then the lights go back on,
+resulting in a loop that never turns off the lights. It's very camera and light dependent.
+The off button is there to  fix the issue! In your Motion App rule, select 
+the `Options for Additional Sensors, Lights-Off and Off options`
 and then select `Additional Switches to turn off when turned off` and select the camera device. 
+That will give the camera driver advanced notice that the lights were turned off and ignore
+it's movement detector, for a while (5 seconds?) 
 
-Enable/Disable buttons may pause the MQTT device (camera). **May**. 
+Enable/Disable buttons if they exist, may pause the MQTT device (camera). **May**. 
 
 There is a webserver on the MQTT device which serves up a snapshot image from the camera
 every minute. One minute is hard coded in the MQTT (python) driver. You can 
@@ -228,6 +326,44 @@ only going to change once a minute. If the device believes it sent an 'inactive'
 the image is in gray scale. It's mostly eye candy. It is not a replacement or substitute for MotionEye
 or for a Security system.
 
+### Machine Learning (ML/AI) discussion. 
+To really make the motionsensor usable it should run additional code that
+tries to find people moving, not changes in 'shapes' There are well known
+algorithms for doing that and I've supplied a half dozen of them. The names
+in the Hubitat dropdown list and the json config reflect the common names. 
+I like Cnn_Shapes so that is a good one to start with.
+
+When one is selected in Hubitat the conversation (via MQTT) changes. The Movement
+still sends 'active' and 'inactive' to the hub (technically to MQTT) Hubitat (driver)
+then sends a 'detect_Cnn_Shapes' for example. The Python driver with the camera
+sees that message and it calls the matching code to see if there is the shape
+in a single frame (jpeg). Hubitat delays calling for the person detection by a few 
+seconds - enough time to sit down or move out the frame. It does something
+similar when the motionsensor code wants to go to inactive. If you're still sitting
+down doing nothing much, the sensor stays active because someone is there.
+
+You might have picked up something interesting and fun. You can change the
+detection algorithm 'on the fly', without any rebooting or changing config
+files just by selecting a different one on the Hubitat device page and pressing
+the Save Preferences button. 
+
+The detection code can be computational expensive (aka slow). 
+Too slow for a Raspberry Pi Zero. Too slow for a Pi 3 or 4, IMO.
+Note that IMO means its too slow for me. It does runs on those but no one is happy
+about it. If the json setting 'use_ml' is 'Remote' then the camermotion sensor
+call sends the single frame (jpeg) to another machine (ml_server_ip + ml_port).
+Presumably the ml_server_ip is a much faster machine. My desktop i7 (6 core, 12 thread) 
+can spike to 1100% load during that detection. The time/latency is OK and there arent
+that many calls (but more than might expect). Old time server
+admins cringe just thinking about those kind of spikes for 1 motionsensor.
+
+So I bought a Nvidia Jetson Nano, compiled opencv with CUDA support and
+nobody huffs about spikes, not even the Jetson. Yes, you could do the same
+thing with a high end graphics card but they cost more than the Nano. A Coral
+USB stick might work - not a lot cheaper than the Jetson Nano.
+
+Running the shape_server.py code is pretty similar to running the motionsensor 
+code. It's included in the git directoy since they share a lot of code.
 
 ### Performance Tuning
 
@@ -238,19 +374,13 @@ Pi Zero. Pi 3 ? - maybe, maybe not.
 
 The first thing to do is reduce the frame size. Just large enough to capture the 
 detail you want to detect. Since I only want to detect me, sitting at a desk and barely
-moving that's were I aim the camera. I can get by with 400 x 400. Use the smallest frame
+moving that's where I aim the camera. I can get by with 400 x 400. Use the smallest frame
 that works for you.
 
 Fortunately we don't need 30fps full speed video. In my webcam config I have
 `"frame_skip": 10,` which means read a frame, sleep for 10 frames, read a frame and compare.
 That works out to have latency of detection of 1/3 second. Of course, if your machine
-can't keep up with 30fps then you're already dropping frames. On a Raspberry PI it might be
-a much lower value because it can't keep up as it is.
-
-The current algo uses a 'contour size' to find the points of interest for determining
-movement. The comparsion is `contourArea < contour_limit` triggers a possible `active`. My
-webcam, 3 feet from me uses a `"contour_limit": 900,` 
-Your mileage may vary. 700 wasn't good enough for me. 
+can't keep up with 30fps then you're already dropping frames. 
 
 `"active_hold": 10,` means we'll wait at least 10 `ticks` after sending an `active` to the
 MQTT topic (Hubitat driver) before we think about issue an `inactive`. In combination with 
