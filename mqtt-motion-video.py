@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os
 import cv2
 import numpy as np
 import paho.mqtt.client as mqtt
@@ -58,6 +59,17 @@ luxsum = 0.0
 curlux = 0
 use_syslog = False
 
+def create_cap_dir():
+  global cap_prefix
+  dp = os.path.join(cap_prefix,
+              datetime.now().strftime('%Y-%m-%d_%H-%M-%S'))
+  try: 
+    os.makedirs(dp)
+  except OSError as e:
+    if e.errno != errno.EEXIST:
+      raise  # This was NOT a "directory exist" error..
+  return dp
+      
 # State machines deal with events causing a movement to another state
 # the movement or transition may invoke a procedure. Most of the ending
 # state of a transition is predeteremined. A few have to calculate to
@@ -71,6 +83,7 @@ use_syslog = False
 def next_state(nevent):
   global cur_state, hmqtt, settings, motion_cnt, timer_thread, logwriter
   global detector_thread, sm_lock, applog
+  global cap_frames, cap_dir, cap_prefix
   sm_lock.acquire()
   lc = cur_state
   next_st = None
@@ -78,6 +91,10 @@ def next_state(nevent):
     if cur_state == State.disabled:
       next_st = State.disabled                # stay
     elif cur_state == State.motion_wait:
+      if cap_prefix != None:
+        # new dir, signal read_cap()
+        cap_dir = create_cap_dir()
+        cap_frames = 1
       hmqtt.send_active(True)
       motion_cnt = settings.active_hold      
       next_st = State.motion_hold              # trans_proc2
@@ -113,6 +130,8 @@ def next_state(nevent):
       motion_cnt -= 1
       if motion_cnt <= 0:
         # time to go inactive 
+        if cap_prefix != None:
+          cap_frames = 0
         hmqtt.send_active(False)
         next_st = State.motion_wait
         motion_cnt = settings.active_hold
@@ -431,9 +450,24 @@ def init_timers(settings):
 
 def read_cam(dim):
   global video_dev
-  ret, frame = video_dev.read()
-  # what to do if ret is not good? 
-  frame_n = cv2.resize(frame, dim)
+  global cap_frames, cap_dir, cap_prefix
+  cnt = 0
+  ret = False
+  frame = None
+  frame_n = None
+  while cnt < 120:
+    ret, frame = video_dev.read()
+    if ret == True and np.shape(frame) != ():
+      frame_n = cv2.resize(frame, dim)
+      break
+    cnt += 1
+  if cnt >= 120:
+    print("Crashing soon")
+    # TODO what to do if ret is not good? 
+  if cap_prefix != None and cap_frames > 0 and cap_frames <= 30:
+    fn = "{}.jpg".format(cap_frames)
+    cv2.imwrite(os.path.join(cap_dir, fn), frame)
+    cap_frames += 1
   return frame_n
  
 def read_local_resize():
@@ -458,6 +492,18 @@ def camera_spin(sec):
   for n in range(sec * 30):
     video_dev.read()
   applog.debug("end spin")
+
+# Capture camera frame and write to a file, notify requester
+# Since we are (probably) run as root, we can write anywhere.
+def camera_capture_to_file(jsonstr):
+  global video_dev, applog, hmqtt
+  args = json.loads(jsonstr)
+  #applog.debug("begin capture on demand")
+  ret,fr = video_dev.read()
+  # TODO what to do if ret is not good? 
+  cv2.imwrite(args['path'], fr)
+  hmqtt.send_capture(args['reply'])
+  applog.debug("Capture to %s reply %s" % (args['path'], args['reply']))
   
 def build_ml_dict(settings):
   ml_dict['Cnn_Face'] = Algo('Cnn_Face', settings)
@@ -472,10 +518,13 @@ logwriter = None
 csvfile = None
 ml_dict = {}
 video_dev = None
+cap_prefix = None
+cap_frames = 0
 
 def main(args=None):
   global logwriter, csvfile, ml_dict, applog, cur_state, dimcap, video_dev
   global settings, hmqtt, show_windows
+  global cap_prefix
   # process cmdline arguments
   ap = argparse.ArgumentParser()
   loglevels = ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL')
@@ -496,7 +545,16 @@ def main(args=None):
   ap.add_argument("-p", "--port", action='store', type=int, default='4466',
     nargs='?', help="server port number, 4466 is default")
   ap.add_argument('-l', '--log', default='DEBUG', choices=loglevels)
+  ap.add_argument("-f", "--capture", required=False, type=str,
+    help="path and name for image captures")
+  
   args = vars(ap.parse_args())
+  
+  # frame capture setup
+  if args['capture']:
+    cap_prefix = args['capture']
+  else:
+    cap_prefix = None
   
   # logging setup
   applog = logging.getLogger('mqttcamera')
@@ -549,10 +607,13 @@ def main(args=None):
   hmqtt = Homie_MQTT(settings, 
                     settings.get_active_hold,
                     settings.set_active_hold)
-  settings.print()
+  settings.display()
   settings.log = applog
   if logwriter:
     logwriter.writerow([settings.settings_serialize])
+    
+  # a cross coupling hack? 
+  hmqtt.capture = camera_capture_to_file
     
   # setup ml_dict
   ml_dict = build_ml_dict(settings)
@@ -562,7 +623,8 @@ def main(args=None):
   # Almost Done with setup. Maybe.
   
   if settings.rtsp_uri:
-    video_dev = cv2.VideoCapture(settings.rtsp_uri)
+    #video_dev = VideoStream(settings.rtsp_uri).start()
+    video_dev = cv2.VideoCapture(settings.rtsp_uri,cv2.CAP_FFMPEG)
   else:
     if settings.camera_number < 0:
       #video_dev = VideoStream(usePiCamera=True, resolution = dimcap).start()

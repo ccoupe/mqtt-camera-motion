@@ -15,6 +15,7 @@ class Homie_MQTT:
     self.getCb = getCb
     self.setCb = setCb
     self.detect_flag = False
+    self.capture = None         # funtion(json) set by main()
     # init server connection
     self.client = mqtt.Client(settings.mqtt_client_name, False)
     #self.client.max_queued_messages_set(3)
@@ -141,6 +142,10 @@ class Homie_MQTT:
           self.settings.state_machine(Event.start)
         elif payload == 'disable':
           self.settings.state_machine(Event.stop)
+        elif payload.startswith('capture='):
+          flds = payload.split('=')
+          self.log.debug(flds[1])
+          self.capture(flds[1]) # arg is json
         else:
           self.log.warn("control payload unknown: %s", payload)
       else:
@@ -189,3 +194,7 @@ class Homie_MQTT:
     else:
       self.publish_msg(self.hcontrol_pub, "false")
       self.log.info("mqtt_publish detect is false")
+      
+  def send_capture(self, topic):
+    self.log.debug("reply to capture %s" % topic)
+    self.publish_msg(topic, json.dumps({"cmd": "capture_done"}))

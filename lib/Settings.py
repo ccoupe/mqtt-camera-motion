@@ -104,7 +104,7 @@ class Settings:
     self.log_events = conf.get('log_events', False)
 
 
-  def print(self):
+  def display(self):
     self.log.info("==== Settings ====")
     self.log.info("%s", self.settings_serialize())
   
