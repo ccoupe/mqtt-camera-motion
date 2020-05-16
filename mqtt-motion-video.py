@@ -451,6 +451,10 @@ def init_timers(settings):
 def read_cam(dim):
   global video_dev
   global cap_frames, cap_dir, cap_prefix
+  # VideoStream has no ret,frame = 
+  frame = video_dev.read()
+  frame_n = cv2.resize(frame, dim)
+  return frame_n
   cnt = 0
   ret = False
   frame = None
@@ -630,8 +634,8 @@ def main(args=None):
       #video_dev = VideoStream(usePiCamera=True, resolution = dimcap).start()
       video_dev = cv2.VideoCapture(settings.camera_number)
     else:
-      #video_dev = VideoStream(src=settings.camera_number, resolution = dimcap).start()
-      video_dev = cv2.VideoCapture(settings.camera_number)
+      video_dev = VideoStream(src=settings.camera_number, resolution = dimcap).start()
+      #video_dev = cv2.VideoCapture(settings.camera_number)
   
   init_timers(settings)
   atexit.register(cleanup)
