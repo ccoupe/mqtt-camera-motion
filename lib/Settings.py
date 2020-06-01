@@ -50,6 +50,7 @@ class Settings:
       # TODO somebody else can deal with Windows
       self.our_IP = "192.168.1.255"
       self.macAddr = "de:ad:be:ef"
+    self.macAddr = self.macAddr.upper()
     
     # load etc settings first
     self.load_settings(self.etcfname)
@@ -78,7 +79,9 @@ class Settings:
     self.mqtt_ctl_topic = conf.get("topic_control", None)
     self.homie_device = conf.get('homie_device', "unknown")
     self.homie_name = conf.get('homie_name', "Unknown Device")
+    self.camera_type = conf.get('camera_type', 'capture')
     self.camera_number = conf.get("camera_number", -1)
+    self.camera_prep = conf.get('camera_prep', None)
     self.camera_width = conf.get("camera_width", 640)
     self.camera_height = conf.get("camera_height", 480)
     self.frame_skip = conf.get("frame_skip", 10)
@@ -90,7 +93,6 @@ class Settings:
     self.lux_secs = conf.get('lux_secs', 60)
     self.settings_rw = conf.get('settings_rw', False)
     # TODO? - Homie options for Lux device
-    self.rtsp_uri = conf.get('rtsp_uri', None)
     self.snapshot = conf.get('snapshot', False)
     self.face_frames = conf.get('face_frames', 60)
     self.ml_algo = conf.get('ml_algo', None)
@@ -115,7 +117,9 @@ class Settings:
     st['mqtt_client_name'] = self.mqtt_client_name
     st['homie_device'] = self.homie_device 
     st['homie_name'] = self.homie_name
+    st['camera_type'] = self.camera_type
     st['camera_number'] = self.camera_number
+    st['camera_prep'] = self.camera_prep
     st['camera_height'] = self.camera_height
     st['camera_width'] = self.camera_width
     st['camera_warmup'] = self.camera_warmup
@@ -126,7 +130,6 @@ class Settings:
     st['active_hold'] = self.active_hold
     st['lux_secs'] = self.lux_secs
     st['image_url'] = self.image_url
-    st['rtsp_uri'] = self.rtsp_uri
     st['settings_rw'] = self.settings_rw
     st['snapshot'] = self.snapshot
     st['ml_algo'] = self.ml_algo

@@ -104,7 +104,9 @@ id (a string), so make up short-ish something for mqtt_client_name
   "mqtt_client_name": "trumpy_cam",
   "homie_device": "trumpy_cam",
   "homie_name": "Pi3 Camera",
+  "camera_type": "capture",
   "camera_number": 0,
+  "camera_prep": nil,
   "camera_height": 480,
   "camera_width": 640,
   "camera_warmup": 2.5,
@@ -134,10 +136,21 @@ is a long form description. It's required but not used.  When mqtt-vision.py
 starts up it creates corresponding topics at the MQTT broker (and many more under
 that homie_device) 
 
-All the other settings in the json file deal with how our camera behaves. Only
-a few of them are known to Hubitat. 'camera_number'. Enter 0 to use /dev/video0, 1 for /dev/video1, etc. 
-Sometimes, -1 works better than 0. I use -1. It's a feature of the opencv code 
-that maybe I shouldn't use. 
+The next group of settings in the json file deal with our camera.
+Cameras come in two types - an internal bus wired
+(CSI) camera on a Pi or a Jetson Nano. I call this a 'capture' cam because
+opencv.VideoCapture() works on it and that has a lower system load that using a
+stream. Load matters on a Pi. The other camera type is 'stream'. This
+could be a webcam on a usb port or an rtsp camera or gstreamer pipeline.
+Sometimes, you can get away with calling a webcam a 'capture' (Linux Mint 19.1)
+and sometimes you can't (Ubuntu 18.04 Jetson Nano). Capture is better if it
+works. 
+
+'camera_number'. Enter 0 to use /dev/video0, 1 for /dev/video1, etc. 
+
+If you need a more complex camera setup for rtsp or gstreamer pipeline
+then you'll put that in the 'camera_prep' setting.
+
 
 Camera height and width resize the frame. Full size can slows things down 
 and truth be told you don't want 'more pixels are better'. You should 

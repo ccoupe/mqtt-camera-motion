@@ -316,7 +316,7 @@ def image_serialize(image):
 # --------- adrian_1 movement detection ----------
 # Adrian @ pyimagesearch.com wrote/publicized most of this. 
 def adrian_1_init():
-  global frame1, frame2, frattr1, frattr2, cur_state, dimcap
+  global frame1, frame2, frattr1, frattr2, cur_state, dimcap, read_cam
   frame1 = read_cam(dimcap)
   frattr1 = lux_calc(frame1)
   frame2 = read_cam(dimcap)
@@ -325,7 +325,7 @@ def adrian_1_init():
 
 def adrian_1_movement(debug):
     global frame1, frame2, frattr1, frattr2
-    global settings, dimcap, hmqtt, shape_proxy, cur_state
+    global settings, dimcap, hmqtt, shape_proxy, cur_state, read_cam
       
     motion = Event.no_motion
     # if the light went out, don't try to detect motion
@@ -447,14 +447,11 @@ def init_timers(settings):
   snapshot_thread = threading.Timer(60, snapshot_timer)
   snapshot_thread.start()
 
+# ----------- Capture Camera functions ----
 
-def read_cam(dim):
+def capture_read_cam(dim):
   global video_dev
   global cap_frames, cap_dir, cap_prefix
-  # VideoStream has no ret,frame = 
-  frame = video_dev.read()
-  frame_n = cv2.resize(frame, dim)
-  return frame_n
   cnt = 0
   ret = False
   frame = None
@@ -467,18 +464,56 @@ def read_cam(dim):
     cnt += 1
   if cnt >= 120:
     print("Crashing soon")
-    # TODO what to do if ret is not good? 
-  if cap_prefix != None and cap_frames > 0 and cap_frames <= 30:
-    fn = "{}.jpg".format(cap_frames)
-    cv2.imwrite(os.path.join(cap_dir, fn), frame)
-    cap_frames += 1
   return frame_n
  
-def read_local_resize():
+def capture_read_local_resize():
   global video_dev, dimcap
-  return read_cam(dimcap)
+  return capture_read_cam(dimcap)
   
-def remote_cam(width):
+def capture_remote_cam(width):
+  global video_dev
+  #log("remote_cam callback called width: %d" % width)
+  ret, fr = video_dev.read()
+  fr = cv2.resize(fr, (width, width))
+  _, jpg = cv2.imencode('.jpg',fr)
+  bfr = jpg.tostring()
+  #print(type(fr), type(jpg), len(jpg), len(bfr))
+  return bfr
+  
+# read frames and discard for 'sec' seconds
+# note: even the pi0 can do 30fps if we don't process them
+def capture_camera_spin(sec):
+  global video_dev, applog
+  applog.debug("begin spin")
+  for n in range(sec * 30):
+    video_dev.read()
+  applog.debug("end spin")
+
+# Capture camera frame and write to a file, notify requester
+# Since we are (probably) run as root, we can write anywhere.
+def capture_camera_capture_to_file(jsonstr):
+  global video_dev, applog, hmqtt
+  args = json.loads(jsonstr)
+  #applog.debug("begin capture on demand")
+  ret, fr = video_dev.read()
+  # TODO what to do if ret is not good? 
+  cv2.imwrite(args['path'], fr)
+  hmqtt.send_capture(args['reply'])
+  applog.debug("Capture to %s reply %s" % (args['path'], args['reply']))
+  
+# ----------- Streaming Camera functions ----
+def stream_read_cam(dim):
+  global video_dev
+  global cap_frames, cap_dir, cap_prefix
+  frame = video_dev.read()
+  frame_n = cv2.resize(frame, dim)
+  return frame_n
+
+def stream_read_local_resize():
+  global video_dev, dimcap
+  return stream_read_cam(dimcap)
+  
+def stream_remote_cam(width):
   global video_dev
   #log("remote_cam callback called width: %d" % width)
   fr = video_dev.read()
@@ -490,7 +525,7 @@ def remote_cam(width):
   
 # read frames and discard for 'sec' seconds
 # note: even the pi0 can do 30fps if we don't process them
-def camera_spin(sec):
+def stream_camera_spin(sec):
   global video_dev, applog
   applog.debug("begin spin")
   for n in range(sec * 30):
@@ -498,16 +533,16 @@ def camera_spin(sec):
   applog.debug("end spin")
 
 # Capture camera frame and write to a file, notify requester
-# Since we are (probably) run as root, we can write anywhere.
-def camera_capture_to_file(jsonstr):
+# Since we are (probably) running as root, we can write anywhere.
+def stream_camera_capture_to_file(jsonstr):
   global video_dev, applog, hmqtt
   args = json.loads(jsonstr)
   #applog.debug("begin capture on demand")
-  ret,fr = video_dev.read()
-  # TODO what to do if ret is not good? 
+  fr = video_dev.read()
   cv2.imwrite(args['path'], fr)
   hmqtt.send_capture(args['reply'])
   applog.debug("Capture to %s reply %s" % (args['path'], args['reply']))
+  
   
 def build_ml_dict(settings):
   ml_dict['Cnn_Face'] = Algo('Cnn_Face', settings)
@@ -527,7 +562,8 @@ cap_frames = 0
 
 def main(args=None):
   global logwriter, csvfile, ml_dict, applog, cur_state, dimcap, video_dev
-  global settings, hmqtt, show_windows
+  global settings, hmqtt, show_windows, read_cam, read_local_resize, remote_cam
+  global camera_spin, camera_capture_to_file
   global cap_prefix
   # process cmdline arguments
   ap = argparse.ArgumentParser()
@@ -549,16 +585,16 @@ def main(args=None):
   ap.add_argument("-p", "--port", action='store', type=int, default='4466',
     nargs='?', help="server port number, 4466 is default")
   ap.add_argument('-l', '--log', default='DEBUG', choices=loglevels)
-  ap.add_argument("-f", "--capture", required=False, type=str,
-    help="path and name for image captures")
+  #ap.add_argument("-f", "--capture", required=False, type=str,
+  #  help="path and name for image captures")
   
   args = vars(ap.parse_args())
   
   # frame capture setup
-  if args['capture']:
-    cap_prefix = args['capture']
-  else:
-    cap_prefix = None
+  #if args['capture']:
+  #  cap_prefix = args['capture']
+  #else:
+  #  cap_prefix = None
   
   # logging setup
   applog = logging.getLogger('mqttcamera')
@@ -616,8 +652,6 @@ def main(args=None):
   if logwriter:
     logwriter.writerow([settings.settings_serialize])
     
-  # a cross coupling hack? 
-  hmqtt.capture = camera_capture_to_file
     
   # setup ml_dict
   ml_dict = build_ml_dict(settings)
@@ -626,17 +660,27 @@ def main(args=None):
   dimcap = (settings.camera_width, settings.camera_height)
   # Almost Done with setup. Maybe.
   
-  if settings.rtsp_uri:
-    #video_dev = VideoStream(settings.rtsp_uri).start()
-    video_dev = cv2.VideoCapture(settings.rtsp_uri,cv2.CAP_FFMPEG)
+  if settings.camera_type == 'capture':
+    video_dev = cv2.VideoCapture(settings.camera_number)
+    read_cam = capture_read_cam
+    read_local_resize = capture_read_local_resize
+    remote_cam = capture_remote_cam
+    camera_spin = capture_camera_spin
+    camera_capture_to_file = capture_camera_capture_to_file
   else:
-    if settings.camera_number < 0:
-      #video_dev = VideoStream(usePiCamera=True, resolution = dimcap).start()
-      video_dev = cv2.VideoCapture(settings.camera_number)
+    if settings.camera_prep is not None:
+      video_dev = cv2.VideoCapture(settings.camera_prep,cv2.CAP_FFMPEG)
     else:
       video_dev = VideoStream(src=settings.camera_number, resolution = dimcap).start()
-      #video_dev = cv2.VideoCapture(settings.camera_number)
-  
+    read_cam = stream_read_cam
+    read_local_resize = stream_read_local_resize
+    remote_cam = stream_remote_cam
+    camera_spin = stream_camera_spin
+    camera_capture_to_file = stream_camera_capture_to_file
+
+  # a cross coupling hack? 
+  hmqtt.capture = camera_capture_to_file
+
   init_timers(settings)
   atexit.register(cleanup)
   # now we pick between movement detectors and start the choosen one
