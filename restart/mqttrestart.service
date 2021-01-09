@@ -1,0 +1,10 @@
+[Unit]
+Description=MQTT Camera
+After=network-online.target
+
+[Service]
+ExecStart=/usr/local/lib/mqttrestart.sh
+Restart=on-abort
+
+[Install]
+WantedBy=multi-user.target
