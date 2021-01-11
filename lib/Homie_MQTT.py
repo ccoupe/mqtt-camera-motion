@@ -6,6 +6,7 @@ from datetime import datetime
 import time, threading, sched
 from lib.Constants import State, Event
 import logging
+import os
 
 class Homie_MQTT:
 
@@ -39,6 +40,8 @@ class Homie_MQTT:
     self.hactive_sub = "homie/"+hdevice+"/motionsensor/active_hold/set"
     self.hcontrol_pub = "homie/"+hdevice+"/motionsensor/control"
     self.hcontrol_sub = "homie/"+hdevice+"/motionsensor/control/set"
+    # The next one is not homie 
+    self.network_sub = 'network/restart' 
     #print("Homie_MQTT __init__")
     self.create_topics(hdevice, hlname)
     
@@ -53,6 +56,13 @@ class Homie_MQTT:
       print("Subscribe failed: ", rc)
     else:
       self.log.info("Init() Subscribed to %s" % self.hcontrol_sub)
+      
+    rc,_ = self.client.subscribe(self.network_sub)
+    if rc != mqtt.MQTT_ERR_SUCCESS:
+      print("Subscribe failed: ", rc)
+    else:
+      self.log.info("Init() Subscribed to %s" % self.hcontrol_sub)
+    
     
   def create_topics(self, hdevice, hlname):
     self.log.info("Begin topic creation")
@@ -88,7 +98,7 @@ class Homie_MQTT:
     self.publish_structure("homie/"+hdevice+"/motionsensor/control/$retained", "true")
     # Done with structure. 
 
-    self.log.info("homeie topics created")
+    self.log.info("homie topics created")
     #Publish the active_hold value, don't retain)    
     self.client.publish(self.hactive_pub, self.settings.active_hold, 0, False)
     
@@ -127,6 +137,13 @@ class Homie_MQTT:
           self.publish_msg(self.hactive_pub, str(self.getCb()))
         else:
           self.log.info("active_hold not changed")
+      elif (topic == self.network_sub):
+        # special pleading?
+        if self.settings.host_name != payload:
+          # somebody else wants us to restart - mosquitto rebooted or
+          # the AI server rebooted 
+          self.log.info(f'{payload} requested a restart')
+          os.system('systemctl restart mqttcamera')
       elif (topic == self.hcontrol_sub):
         if (payload == 'off'):
           self.settings.state_machine(Event.lights_out)
@@ -137,7 +154,8 @@ class Homie_MQTT:
           if len(ls) > 1:
             self.log.debug("switching detector to %s", ls[1])
             self.settings.ml_algo = ls[1]
-          self.settings.state_machine(Event.check)
+          if self.settings.two_step:
+            self.settings.state_machine(Event.check)
         elif payload == 'enable':
           self.settings.state_machine(Event.start)
         elif payload == 'disable':

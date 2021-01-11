@@ -42,9 +42,10 @@ class Settings:
       self.our_IP =  s.getsockname()[0]
       # from stackoverflow (of course):
       self.macAddr = ':'.join(("%012x" % get_mac())[i:i+2] for i in range(0, 12, 2))
+      self.host_name = socket.gethostname() 
     elif sys.platform.startswith('darwin'):
-      host_name = socket.gethostname() 
-      self.our_IP = socket.gethostbyname(host_name) 
+      self.host_name = socket.gethostname() 
+      self.our_IP = socket.gethostbyname(self.host_name) 
       self.macAddr = ':'.join(("%012x" % get_mac())[i:i+2] for i in range(0, 12, 2))
     else:
       # TODO somebody else can deal with Windows
@@ -103,6 +104,7 @@ class Settings:
     self.mv_algo = conf.get('mv_algo', 'adrian_1')
     self.mv_threshold = conf.get('mv_threshold', 10)
     self.use_ml = conf.get('use_ml', None)
+    self.two_step = conf.get('two_step', True)
     self.log_events = conf.get('log_events', False)
 
 
@@ -140,6 +142,7 @@ class Settings:
     st['mv_algo'] = self.mv_algo
     st['mv_threshold'] =self.mv_threshold
     st['use_ml'] = self.use_ml
+    st['two_step'] = self.two_step
     st['log_events'] = self.log_events
     str = json.dumps(st)
     return str

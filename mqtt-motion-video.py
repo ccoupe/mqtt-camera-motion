@@ -95,9 +95,19 @@ def next_state(nevent):
         # new dir, signal read_cap()
         cap_dir = create_cap_dir()
         cap_frames = 1
-      hmqtt.send_active(True)
-      motion_cnt = settings.active_hold      
-      next_st = State.motion_hold              # trans_proc2
+      if settings.two_step:
+        hmqtt.send_active(True)
+        motion_cnt = settings.active_hold      
+        next_st = State.motion_hold              # trans_proc2
+      else:
+        tf = check_presence()
+        if tf:
+          hmqtt.send_active(True)
+          motion_cnt = settings.active_hold      
+          next_st = State.motion_hold
+        else:
+          # nothing there, keep waiting
+          next_st = State.motion_wait
     elif cur_state == State.motion_hold:
       next_st = State.motion_hold
       motion_cnt = settings.active_hold     # trans_proc3
@@ -132,9 +142,19 @@ def next_state(nevent):
         # time to go inactive 
         if cap_prefix != None:
           cap_frames = 0
-        hmqtt.send_active(False)
-        next_st = State.motion_wait
-        motion_cnt = settings.active_hold
+        if settings.two_step:
+          hmqtt.send_active(False)
+          next_st = State.motion_wait
+          motion_cnt = settings.active_hold
+        else:
+          tf = check_presence()
+          if not tf:
+            hmqtt.send_active(False)
+            next_st = State.motion_wait
+            motion_cnt = settings.active_hold      
+          else:
+            # still someone there, keep holding
+            next_st = State.motion_hold
       else:
         next_st = State.motion_hold
     elif cur_state == State.check_wait:
@@ -287,21 +307,8 @@ def lux_calc(frame):
       luxcnt = luxcnt + 1
     return ok
 
-# we grab a frame and pass it to the correct algo. Which may be an rpyc proxy
-# these are not called continously - only after movement is detected and
-# then if a deeper check is requested. Then call the state machine to
-# deal with the result. 
 def detector_general():
-  global settings, ml_dict, frame1, show_windows
-  result = False
-  time.sleep(1)       # one second delay, get a new frame
-  read_local_resize()
-  mlobj = ml_dict[settings.ml_algo]
-  if settings.use_ml == 'remote':
-    # TODO: restart if server is offline
-    result, n = mlobj.proxy.root.detectors(settings.ml_algo, False, settings.confidence, image_serialize(frame1))
-  else:
-    result, n = mlobj.proxy(settings.ml_algo, show_windows, settings.confidence, frame1)
+  result = check_presence()
   if result:
     next_state(Event.det_true)
   else:
@@ -312,6 +319,24 @@ def image_serialize(image):
   bfr = jpg.tostring()
   #log("jpg_toString: %d" % len(bfr))
   return bfr
+  
+
+# we grab a frame and pass it to the correct algo. Which may be an rpyc proxy
+# these are not called continously - only after movement is detected and
+# then if a deeper check is requested. Then call the state machine to
+# deal with the result. 
+def check_presence():
+  global settings, ml_dict, frame1, show_windows
+  result = False
+  time.sleep(0.25)       # one quarter second delay, get a new frame
+  read_local_resize()
+  mlobj = ml_dict[settings.ml_algo]
+  if settings.use_ml == 'remote':
+    # TODO: restart if server is offline
+    result, n = mlobj.proxy.root.detectors(settings.ml_algo, False, settings.confidence, image_serialize(frame1))
+  else:
+    result, n = mlobj.proxy(settings.ml_algo, show_windows, settings.confidence, frame1)
+  return result
   
 # --------- adrian_1 movement detection ----------
 # Adrian @ pyimagesearch.com wrote/publicized most of this. 
@@ -505,7 +530,11 @@ def capture_camera_capture_to_file(jsonstr):
 def stream_read_cam(dim):
   global video_dev
   global cap_frames, cap_dir, cap_prefix
-  frame = video_dev.read()
+  ret, frame = video_dev.read()
+  if ret == True and np.shape(frame) != ():
+    frame_n = cv2.resize(frame, dim)
+  else:
+    applog.info('no frame read, crash ahead')
   frame_n = cv2.resize(frame, dim)
   return frame_n
 
@@ -516,7 +545,7 @@ def stream_read_local_resize():
 def stream_remote_cam(width):
   global video_dev
   #log("remote_cam callback called width: %d" % width)
-  fr = video_dev.read()
+  ret, fr = video_dev.read()
   fr = cv2.resize(fr, (width, width))
   _, jpg = cv2.imencode('.jpg',fr)
   bfr = jpg.tostring()
@@ -538,7 +567,7 @@ def stream_camera_capture_to_file(jsonstr):
   global video_dev, applog, hmqtt
   args = json.loads(jsonstr)
   #applog.debug("begin capture on demand")
-  fr = video_dev.read()
+  ret, fr = video_dev.read()
   cv2.imwrite(args['path'], fr)
   hmqtt.send_capture(args['reply'])
   applog.debug("Capture to %s reply %s" % (args['path'], args['reply']))
@@ -559,6 +588,32 @@ ml_dict = {}
 video_dev = None
 cap_prefix = None
 cap_frames = 0
+
+def open_cam_rtsp(uri, width, height, latency):
+    gst_str = ("rtspsrc location={} latency={} ! rtph264depay ! h264parse ! omxh264dec ! "
+               "nvvidconv ! video/x-raw, width=(int){}, height=(int){}, format=(string)BGRx ! "
+               "videoconvert ! appsink").format(uri, latency, width, height)
+    return cv2.VideoCapture(gst_str, cv2.CAP_GSTREAMER)
+'''
+# CJC - I haven't tested these but they are a decent starting place
+# not that nvvidconv is nvidia only so beware.
+def open_cam_usb(dev, width, height):
+    # We want to set width and height here, otherwise we could just do:
+    #     return cv2.VideoCapture(dev)
+    gst_str = ("v4l2src device=/dev/video{} ! "
+               "video/x-raw, width=(int){}, height=(int){}, format=(string)RGB ! "
+               "videoconvert ! appsink").format(dev, width, height)
+    return cv2.VideoCapture(gst_str, cv2.CAP_GSTREAMER)
+
+def open_cam_onboard(width, height):
+    # On versions of L4T previous to L4T 28.1, flip-method=2
+    # Use Jetson onboard camera
+    gst_str = ("nvcamerasrc ! "
+               "video/x-raw(memory:NVMM), width=(int)2592, height=(int)1458, format=(string)I420, framerate=(fraction)30/1 ! "
+               "nvvidconv ! video/x-raw, width=(int){}, height=(int){}, format=(string)BGRx ! "
+               "videoconvert ! appsink").format(width, height)
+    return cv2.VideoCapture(gst_str, cv2.CAP_GSTREAMER)
+'''
 
 def main(args=None):
   global logwriter, csvfile, ml_dict, applog, cur_state, dimcap, video_dev
@@ -667,9 +722,18 @@ def main(args=None):
     remote_cam = capture_remote_cam
     camera_spin = capture_camera_spin
     camera_capture_to_file = capture_camera_capture_to_file
-  else:
+  elif settings.camera_type == 'nvidia-rtsp':
+    video_dev = open_cam_rtsp(settings.camera_number, 640, 480, 0)
+    #os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;udp"
+    #video_dev = cv2.VideoCapture(settings.camera_prep,cv2.CAP_FFMPEG)
+    read_cam = stream_read_cam
+    read_local_resize = stream_read_local_resize
+    remote_cam = stream_remote_cam
+    camera_spin = stream_camera_spin
+    camera_capture_to_file = stream_camera_capture_to_file
+  elif settings.camera_type == 'stream':
     if settings.camera_prep is not None:
-      video_dev = cv2.VideoCapture(settings.camera_prep,cv2.CAP_FFMPEG)
+      video_dev = cv2.VideoCapture(settings.camera_prep,cv2.CAP_GSTREAMER)
     else:
       video_dev = VideoStream(src=settings.camera_number, resolution = dimcap).start()
     read_cam = stream_read_cam
@@ -677,6 +741,9 @@ def main(args=None):
     remote_cam = stream_remote_cam
     camera_spin = stream_camera_spin
     camera_capture_to_file = stream_camera_capture_to_file
+  else:
+    log('bad camera_type in settings file')
+    exit()
 
   # a cross coupling hack? 
   hmqtt.capture = camera_capture_to_file

@@ -5,7 +5,7 @@
   "homie_device": "office_webcam",
   "homie_name": "Logitech 615",
   "camera_type": "capture",
-  "camera_number": 1,
+  "camera_number": 0,
   "camera_prep": null,
   "camera_height": 480,
   "camera_width": 640,
@@ -23,6 +23,7 @@
   "ml_server_ip": "192.168.1.4",
   "ml_port": 4466,
   "ml_algo": "Cnn_Shapes",
+  "two_step": false,
   "confidence": 0.4,
   "use_ml": "remote"
 }

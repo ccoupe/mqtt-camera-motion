@@ -3,7 +3,7 @@ Description=MQTT Camera
 After=network-online.target
 
 [Service]
-ExecStart=/usr/local/lib/mqttrestart.sh
+ExecStart=/usr/local/lib/mqttrestart/mqttrestart.sh
 Restart=on-abort
 
 [Install]
