@@ -55,7 +55,12 @@ Note: You can not share the camera with this program. When it's running you
 can't use MotionEye (moditiond) or Cheese or Skype, for example. You might be
 might be able to use the microphone on a USb Webcam. Maybe.
 
-### Find your Video device
+There are several ways to connect a camera to a linux system. If it is
+a usb webcam or csi cam like a raspberry cam then it will have a /dev/video 
+entry. If you want to read a network camera please use an rtsp camera and
+pay attention.
+
+### Find your Video device (not for rtsp)
 ```
 ls -ld /dev/video*
 ```
@@ -144,13 +149,13 @@ stream. Load matters on a Pi. The other camera type is 'stream'. This
 could be a webcam on a usb port or an rtsp camera or gstreamer pipeline.
 Sometimes, you can get away with calling a webcam a 'capture' (Linux Mint 19.1)
 and sometimes you can't (Ubuntu 18.04 Jetson Nano). Capture is better if it
-works. 
+works but often it doesn't.
 
 'camera_number'. Enter 0 to use /dev/video0, 1 for /dev/video1, etc. 
-
+For an rtsp camera, "camera_number": "rtsp://username:password@192.168.1.40/live" is
+an example, for a wyze cam with their rtsp image.
 If you need a more complex camera setup for rtsp or gstreamer pipeline
 then you'll put that in the 'camera_prep' setting.
-
 
 Camera height and width resize the frame. Full size can slows things down 
 and truth be told you don't want 'more pixels are better'. You should 
@@ -186,12 +191,13 @@ you like to active_hold, just modify the json file and restart. It's nasty
 code and should disapper and hubitat will change it back to Hubitat's
 preference setting. 
 
-snapshot: True means take a picture every minute and store in /var/www/camera/snapshot.jpg
+snapshot: True means take a picture every minute and store in /var/www/camera/{snapshot.jpg}
 If you are running a normal web server on the same computer then that is not an ideal place and you
 may want to disable that, change the code or play some symlink games. The picture can be retrieved
 and placed in a hubitat dashboard. If the motion sensor was signalling 'inactive' then
-the picture will be grayscale. If active status then it will be in color. it's Eye candy and I
-like it just enough to keep it around but not enough to fix some obvious problems.
+the picture will be grayscale. If active status, then it will be in color. it's Eye candy and I
+like it just enough to keep it around but not enough to fix some obvious problems. One
+problem that I did fix is that snapshot.jpg is now {homie_device}.jpg
 
 'mv_algo' may be 'adrian_1' or 'intel'. It defaults to 'adrian_1' There are
 two methods available for determining 'motion' or 'movement' (hence the mv_)
@@ -255,7 +261,7 @@ the motionsensor code
 ```
 #!/usr/bin/env bash
 ip=`hostname -I`
-python3 -m http.server 7534 --bind ${ip} --directory /var/www &
+#python3 -m http.server 7534 --bind ${ip} --directory /var/www &
 cd /usr/local/lib/mqttcamera/
 python3 mqtt-motion-video.py --system -c trumpy.json
 ```
@@ -290,6 +296,12 @@ That should get it running now and for every reboot. To stop it use `sudo system
 If you want to disable it from starting up at boot time then do `sudo systemctl disable mqttcamera`
 
 To watch the syslog, from any terminal `tail -f /var/log/syslod`
+
+#### Light Http
+apt install lighttpd
+vi /etc/lighttpd/lighttpd.conf
+server.document-root        = "/var/www"
+server.port                 = 7534
 
 ### Hubitat driver install
  

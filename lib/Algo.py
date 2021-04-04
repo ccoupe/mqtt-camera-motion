@@ -4,13 +4,13 @@ import numpy as np
 import imutils
 import rpyc
 
+  
 class Algo:
 
-  def __init__(self, name, settings):
-    self.settings = settings
-    self.log = settings.log
-    if self.settings.use_ml == 'remote':
-      self.proxy = rpyc.connect(settings.ml_server_ip, settings.ml_port, 
+  def __init__(self, name, remote, server_ip, server_port, log, use_cuda):
+    self.log = log
+    if remote:
+      self.proxy = rpyc.connect(server_ip, server_port, 
           config={'allow_public_attrs': True})
     else:
       if name == 'Cnn_Shapes':
@@ -21,9 +21,18 @@ class Algo:
         self.colors = np.random.uniform(0, 255, size=(len(self.classes), 3))
         self.dlnet = cv2.dnn.readNetFromCaffe("shapes/MobileNetSSD_deploy.prototxt.txt",
           "shapes/MobileNetSSD_deploy.caffemodel")
+        self.log.info('Checking for cuda')
+        if use_cuda  is True:
+          self.log.info('Will use cuda backend')
+          self.dlnet.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
+          self.dlnet.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
+          
       elif name == 'Cnn_Face':
         self.dlnet = cv2.dnn.readNetFromCaffe("face/deploy.prototxt.txt", 
             "face/res10_300x300_ssd_iter_140000.caffemodel")
+        if use_cuda:
+          self.dlnet.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
+          self.dlnet.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
       elif name.startswith('Haar'):
         list = name.split('_')
         haar = 'haar/fullbody_recognition_model.xml'

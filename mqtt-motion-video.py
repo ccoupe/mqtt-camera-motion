@@ -22,6 +22,7 @@ from lib.Constants import State, Event
 from lib.Settings import Settings
 from lib.Homie_MQTT import Homie_MQTT
 from lib.Algo import Algo
+import ctypes
     
 import rpyc
 
@@ -50,7 +51,7 @@ frattr2 = False
 #off_hack = False
 detect_flag = False   # signal complex detection/recog pass
 shape_proxy = None
-  
+
 # some debugging and stats variables
 debug_level = 0          # From command line
 show_windows = False		# -d on the command line for True
@@ -58,6 +59,8 @@ luxcnt = 1
 luxsum = 0.0
 curlux = 0
 use_syslog = False
+have_cuda = False
+use_three_arg = False
 
 def create_cap_dir():
   global cap_prefix
@@ -284,10 +287,10 @@ def snapshot_timer():
   #log("Snapshot taken")
   nimg = frame1 
   if cur_state == State.motion_hold:
-    status = cv2.imwrite('/var/www/camera/snapshot.jpg',nimg) 
+    status = cv2.imwrite(f'/var/www/camera/{settings.homie_device}.jpg',nimg) 
   else:
     gray = cv2.cvtColor(nimg, cv2.COLOR_BGR2GRAY)
-    status = cv2.imwrite('/var/www/camera/snapshot.jpg',gray) 
+    status = cv2.imwrite(f'/var/www/camera/{settings.homie_device}.jpg',gray) 
   snapshot_thread = threading.Timer(60, snapshot_timer)
   snapshot_thread.start()
       
@@ -323,19 +326,43 @@ def image_serialize(image):
 
 # we grab a frame and pass it to the correct algo. Which may be an rpyc proxy
 # these are not called continously - only after movement is detected and
-# then if a deeper check is requested. Then call the state machine to
-# deal with the result. 
+# then if a deeper check is requested. Then let the state machine deal with the result. 
+
+# we check for the proxy state (!= None)
 def check_presence():
-  global settings, ml_dict, frame1, show_windows
+  global settings, ml_dict, frame1, show_windows, backup_ml, applog, have_cuda
   result = False
   time.sleep(0.25)       # one quarter second delay, get a new frame
   read_local_resize()
-  mlobj = ml_dict[settings.ml_algo]
-  if settings.use_ml == 'remote':
-    # TODO: restart if server is offline
+  mlobj = None
+  try:
+    mlobj = ml_dict.get(settings.ml_algo, None)
+    if mlobj is None:
+      applog.info(f'Setting up rpc for {settings.ml_server_ip}:{settings.ml_port} {settings.ml_algo}')
+      mlobj = Algo(settings.ml_algo, 
+            settings.use_ml == 'remote', 
+            settings.ml_server_ip, 
+            settings.ml_port, 
+            settings.log,
+            have_cuda)
+      ml_dict[settings.ml_algo] = mlobj
+    if settings.use_ml == 'remote':
+      result, n = mlobj.proxy.root.detectors(settings.ml_algo, False, settings.confidence, image_serialize(frame1))
+    else:
+      result, n = mlobj.proxy(settings.ml_algo, show_windows, settings.confidence, frame1)
+  except (ConnectionRefusedError, EOFError):
+    applog.warning('Failing over to backup')
+    mlobj = backup_ml.get(settings.ml_algo, None)
+    if mlobj is None:
+      applog.info(f'Setting up rpc for {settings.ml_backup_ip}:{settings.ml_port} {settings.ml_algo}')
+      mlobj = Algo(settings.ml_algo,
+                True, 
+                settings.ml_backup_ip, 
+                settings.ml_port, 
+                settings.log,
+                have_cuda)
+      backup_ml[settings.ml_algo] = mlobj
     result, n = mlobj.proxy.root.detectors(settings.ml_algo, False, settings.confidence, image_serialize(frame1))
-  else:
-    result, n = mlobj.proxy(settings.ml_algo, show_windows, settings.confidence, frame1)
   return result
   
 # --------- adrian_1 movement detection ----------
@@ -349,20 +376,24 @@ def adrian_1_init():
   cur_state = State.motion_wait
 
 def adrian_1_movement(debug):
-    global frame1, frame2, frattr1, frattr2
+    global frame1, frame2, frattr1, frattr2, use_three_arg
     global settings, dimcap, hmqtt, shape_proxy, cur_state, read_cam
-      
+    #global applog
+    #applog.info(f'movement?')
     motion = Event.no_motion
-    # if the light went out, don't try to detect motion
     if frattr1 and frattr2:
       diff = cv2.absdiff(frame1, frame2)
       gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
       blur = cv2.GaussianBlur(gray, (5,5), 0)
       _, thresh = cv2.threshold(blur, 20, 255, cv2.THRESH_BINARY)
       dilated = cv2.dilate(thresh, None, iterations=3)
-      contours, _ = cv2.findContours(dilated, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+      if use_three_arg:
+        _,contours, _ = cv2.findContours(dilated, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+      else:
+        contours, _ = cv2.findContours(dilated, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+      
       for contour in contours:
-          (x, y, w, h) = cv2.boundingRect(contour)
+          #(x, y, w, h) = cv2.boundingRect(contour)
           
           if cv2.contourArea(contour) < settings.contour_limit:
               continue
@@ -372,10 +403,11 @@ def adrian_1_movement(debug):
             cv2.rectangle(frame1, (x, y), (x+w, y+h), (0, 255, 0), 2)
             cv2.putText(frame1, "Status: {}".format('Movement'), (10, 20), cv2.FONT_HERSHEY_SIMPLEX,
                         1, (0, 0, 255), 3)
-  
+      '''
       if debug:
         cv2.drawContours(frame1, contours, -1, (0, 255, 0), 2)
         cv2.imshow("Adrian_1", frame1)
+      '''
       if motion == Event.no_motion:
         next_state(Event.no_motion)
     frame1 = frame2
@@ -475,8 +507,9 @@ def init_timers(settings):
 # ----------- Capture Camera functions ----
 
 def capture_read_cam(dim):
-  global video_dev
+  global video_dev, settings
   global cap_frames, cap_dir, cap_prefix
+  global applog
   cnt = 0
   ret = False
   frame = None
@@ -486,11 +519,17 @@ def capture_read_cam(dim):
     if ret == True and np.shape(frame) != ():
       frame_n = cv2.resize(frame, dim)
       break
+    elif ret == False:
+      print('restart stream')
+      video_dev.release()
+      video_dev = cv2.VideoCapture(settings.camera_number)
+      cnt = 0
     cnt += 1
   if cnt >= 120:
     print("Crashing soon")
   return frame_n
- 
+  
+  
 def capture_read_local_resize():
   global video_dev, dimcap
   return capture_read_cam(dimcap)
@@ -537,7 +576,7 @@ def stream_read_cam(dim):
     applog.info('no frame read, crash ahead')
   frame_n = cv2.resize(frame, dim)
   return frame_n
-
+  
 def stream_read_local_resize():
   global video_dev, dimcap
   return stream_read_cam(dimcap)
@@ -572,31 +611,80 @@ def stream_camera_capture_to_file(jsonstr):
   hmqtt.send_capture(args['reply'])
   applog.debug("Capture to %s reply %s" % (args['path'], args['reply']))
   
+#
+# imstream is adrian's multithreaded capure in imutils
+#
+def imstream_read_cam(dim):
+  global video_dev
+  global cap_frames, cap_dir, cap_prefix
+  frame = video_dev.read()
+  if frame is None:
+    applog.info('no frame read, crash ahead')
+  frame_n = cv2.resize(frame, dim)
+  return frame_n
+
+def imstream_read_local_resize():
+  global video_dev, dimcap
+  return imstream_read_cam(dimcap)
   
-def build_ml_dict(settings):
-  ml_dict['Cnn_Face'] = Algo('Cnn_Face', settings)
-  ml_dict['Cnn_Shapes'] = Algo('Cnn_Shapes', settings)
-  ml_dict['Haar_Face'] = Algo('Haar_Face', settings)
-  ml_dict['Haar_FullBody'] = Algo('Haar_FullBody', settings)
-  ml_dict['Haar_UpperBody'] = Algo('Haar_UpperBody', settings)
-  ml_dict['Hog_People'] = Algo('Hog_People', settings)
-  return ml_dict
+def imstream_remote_cam(width):
+  global video_dev
+  #log("remote_cam callback called width: %d" % width)
+  fr = video_dev.read()
+  fr = cv2.resize(fr, (width, width))
+  _, jpg = cv2.imencode('.jpg',fr)
+  bfr = jpg.tostring()
+  #print(type(fr), type(jpg), len(jpg), len(bfr))
+  return bfr
+  
+# read frames and discard for 'sec' seconds
+# note: even the pi0 can do 30fps if we don't process them
+def imstream_camera_spin(sec):
+  global video_dev, applog
+  applog.debug("begin spin")
+  for n in range(sec * 30):
+    video_dev.read()
+  applog.debug("end spin")
+
+# Capture camera frame and write to a file, notify requester
+# Since we are (probably) running as root, we can write anywhere.
+def imstream_camera_capture_to_file(jsonstr):
+  global video_dev, applog, hmqtt
+  args = json.loads(jsonstr)
+  #applog.debug("begin capture on demand")
+  ret, fr = video_dev.read()
+  cv2.imwrite(args['path'], fr)
+  hmqtt.send_capture(args['reply'])
+  applog.debug("Capture to %s reply %s" % (args['path'], args['reply']))
+
+def build_ml_dict(rmt, ip, port, log):
+  global have_cuda
+  t_dict = {}
+  t_dict['Cnn_Face'] = Algo('Cnn_Face', rmt, ip, port, log, have_cuda)
+  t_dict['Cnn_Shapes'] = Algo('Cnn_Shapes', rmt, ip, port, log, have_cuda)
+  t_dict['Haar_Face'] = Algo('Haar_Face', rmt, ip, port, log, have_cuda)
+  t_dict['Haar_FullBody'] = Algo('Haar_FullBody', rmt, ip, port, log, have_cuda)
+  t_dict['Haar_UpperBody'] = Algo('Haar_UpperBody', rmt, ip, port, log, have_cuda)
+  t_dict['Hog_People'] = Algo('Hog_People', rmt, ip, port, log, have_cuda)
+  return t_dict
   
 logwriter = None
 csvfile = None
 ml_dict = {}
+backup_ml = {}
 video_dev = None
 cap_prefix = None
 cap_frames = 0
 
-def open_cam_rtsp(uri, width, height, latency):
+def nvidia_cam_rtsp(uri, width, height, latency):
     gst_str = ("rtspsrc location={} latency={} ! rtph264depay ! h264parse ! omxh264dec ! "
                "nvvidconv ! video/x-raw, width=(int){}, height=(int){}, format=(string)BGRx ! "
                "videoconvert ! appsink").format(uri, latency, width, height)
     return cv2.VideoCapture(gst_str, cv2.CAP_GSTREAMER)
+      
 '''
 # CJC - I haven't tested these but they are a decent starting place
-# not that nvvidconv is nvidia only so beware.
+# note that nvvidconv is nvidia only so beware.
 def open_cam_usb(dev, width, height):
     # We want to set width and height here, otherwise we could just do:
     #     return cv2.VideoCapture(dev)
@@ -614,12 +702,65 @@ def open_cam_onboard(width, height):
                "videoconvert ! appsink").format(width, height)
     return cv2.VideoCapture(gst_str, cv2.CAP_GSTREAMER)
 '''
+# following cuda check does not work (Mint 19.1, GeForce 1030)
+def is_cuda_cv(): 
+    global have_cuda
+    try:
+        count = cv2.cuda.getCudaEnabledDeviceCount()
+        if count > 0:
+            have_cuda = True
+        else:
+            have_cuda = False
+    except:
+        have_cuda = False
+    return have_cuda
+
+def check_cuda():
+  CUDA_SUCCESS = 0
+  libnames = ('libcuda.so', 'libcuda.dylib', 'cuda.dll')
+  for libname in libnames:
+    try:
+      cuda = ctypes.CDLL(libname)
+    except OSError:
+      continue
+    else:
+      break
+  else:
+    return False
+    
+  nGpus = ctypes.c_int()
+  name = b' ' * 100
+  cc_major = ctypes.c_int()
+  cc_minor = ctypes.c_int()
+  cores = ctypes.c_int()
+  threads_per_core = ctypes.c_int()
+  clockrate = ctypes.c_int()
+  freeMem = ctypes.c_size_t()
+  totalMem = ctypes.c_size_t()
+
+  result = ctypes.c_int()
+  device = ctypes.c_int()
+  context = ctypes.c_void_p()
+  error_str = ctypes.c_char_p()
+  result = cuda.cuInit(0)
+  if result != CUDA_SUCCESS:
+      cuda.cuGetErrorString(result, ctypes.byref(error_str))
+      print("cuInit failed with error code %d: %s" % (result, error_str.value.decode()))
+      return False
+  result = cuda.cuDeviceGetCount(ctypes.byref(nGpus))
+  if result != CUDA_SUCCESS:
+      cuda.cuGetErrorString(result, ctypes.byref(error_str))
+      print("cuDeviceGetCount failed with error code %d: %s" % (result, error_str.value.decode()))
+      return False
+  print("Found %d device(s)." % nGpus.value)
+  
+  return nGpus.value > 0
 
 def main(args=None):
   global logwriter, csvfile, ml_dict, applog, cur_state, dimcap, video_dev
   global settings, hmqtt, show_windows, read_cam, read_local_resize, remote_cam
   global camera_spin, camera_capture_to_file
-  global cap_prefix
+  global cap_prefix, backup_ml, have_cuda,  use_three_arg
   # process cmdline arguments
   ap = argparse.ArgumentParser()
   loglevels = ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL')
@@ -642,6 +783,8 @@ def main(args=None):
   ap.add_argument('-l', '--log', default='DEBUG', choices=loglevels)
   #ap.add_argument("-f", "--capture", required=False, type=str,
   #  help="path and name for image captures")
+  ap.add_argument('-3', "--three_arg", action = 'store_true',
+    default=False, help="findContours has 3 return values")
   
   args = vars(ap.parse_args())
   
@@ -698,6 +841,9 @@ def main(args=None):
   if args['debug']:
     show_windows = True
     settings.use_ml = 'local'
+  if args['three_arg']:
+    # yet another damn global for a bug
+    use_three_arg = True
     
   hmqtt = Homie_MQTT(settings, 
                     settings.get_active_hold,
@@ -708,8 +854,27 @@ def main(args=None):
     logwriter.writerow([settings.settings_serialize])
     
     
-  # setup ml_dict
-  ml_dict = build_ml_dict(settings)
+  # setup ml_dict. Dealing with the backup is a bit hackish.
+  # Rpc proxy's are setup the first time they are needed. 
+  have_cuda = is_cuda_cv()
+  applog.info(f"Have CUDA: {check_cuda()}")
+  if settings.use_ml != 'remote':
+   applog.info(f"Will use CUDA: {have_cuda}")
+   ml_dict = build_ml_dict(False, None, None, applog)
+  '''
+  else:
+    try:
+      ml_dict = build_ml_dict(True, settings.ml_server_ip, 
+          settings.ml_port, applog)
+      applog.info('Using primary ml server');
+      backup_ml = build_ml_dict(True, settings.ml_backup_ip, 
+        settings.ml_port, applog)
+      applog.info('Note secondary ml server');
+    except ConnectionRefusedError:
+     applog.warn('Using backup ML server')
+     ml_dict = build_ml_dict(True, settings.ml_backup_ip, 
+        settings.ml_port, applog)
+  '''    
   
   cur_state = State.motion_wait
   dimcap = (settings.camera_width, settings.camera_height)
@@ -723,24 +888,35 @@ def main(args=None):
     camera_spin = capture_camera_spin
     camera_capture_to_file = capture_camera_capture_to_file
   elif settings.camera_type == 'nvidia-rtsp':
-    video_dev = open_cam_rtsp(settings.camera_number, 640, 480, 0)
-    #os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;udp"
-    #video_dev = cv2.VideoCapture(settings.camera_prep,cv2.CAP_FFMPEG)
+    video_dev = nvidia_cam_rtsp(settings.camera_number, settings.camera_width,
+			settings.camera_height, 0)
+    read_cam = stream_read_cam
+    read_local_resize = stream_read_local_resize
+    remote_cam = stream_remote_cam
+    camera_spin = stream_camera_spin
+    camera_capture_to_file = stream_camera_capture_to_file
+  elif settings.camera_type == 'ffmpeg-rtsp':
+    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transpo rt;udp"
+    video_dev = cv2.VideoCapture(settings.camera_number,cv2.CAP_FFMPEG)
+    read_cam = stream_read_cam
+    read_local_resize = stream_read_local_resize
+    remote_cam = stream_remote_cam
+    camera_spin = stream_camera_spin
+    camera_capture_to_file = stream_camera_capture_to_file
+  elif settings.camera_type == 'gst':
+    video_dev = cv2.VideoCapture(settings.camera_prep,cv2.CAP_GSTREAMER)
     read_cam = stream_read_cam
     read_local_resize = stream_read_local_resize
     remote_cam = stream_remote_cam
     camera_spin = stream_camera_spin
     camera_capture_to_file = stream_camera_capture_to_file
   elif settings.camera_type == 'stream':
-    if settings.camera_prep is not None:
-      video_dev = cv2.VideoCapture(settings.camera_prep,cv2.CAP_GSTREAMER)
-    else:
-      video_dev = VideoStream(src=settings.camera_number, resolution = dimcap).start()
-    read_cam = stream_read_cam
-    read_local_resize = stream_read_local_resize
-    remote_cam = stream_remote_cam
-    camera_spin = stream_camera_spin
-    camera_capture_to_file = stream_camera_capture_to_file
+    video_dev = VideoStream(src=settings.camera_number, resolution = dimcap).start()
+    read_cam = imstream_read_cam
+    read_local_resize = imstream_read_local_resize
+    remote_cam = imstream_remote_cam
+    camera_spin = imstream_camera_spin
+    camera_capture_to_file = imstream_camera_capture_to_file
   else:
     log('bad camera_type in settings file')
     exit()

@@ -21,6 +21,7 @@
   "ml_algo": "shapes",
   "face_frames": 10,
   "confidence": 0.4,
-  "ml_server_ip": "192.168.1.2",
+  "ml_server_ip": "192.168.1.4",
+  "ml_backup_ip": "192.168.1.2",
   "ml_port": 5566 
 }

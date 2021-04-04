@@ -106,6 +106,7 @@ class Settings:
     self.use_ml = conf.get('use_ml', None)
     self.two_step = conf.get('two_step', True)
     self.log_events = conf.get('log_events', False)
+    self.ml_backup_ip = conf.get('ml_backup_ip', '192.168.1.2')
 
 
   def display(self):
@@ -144,6 +145,7 @@ class Settings:
     st['use_ml'] = self.use_ml
     st['two_step'] = self.two_step
     st['log_events'] = self.log_events
+    st['ml_backup_ip'] = self.ml_backup_ip
     str = json.dumps(st)
     return str
 
