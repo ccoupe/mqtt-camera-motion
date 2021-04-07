@@ -25,6 +25,8 @@ from lib.Algo import Algo
 import ctypes
     
 import rpyc
+import websocket  # websocket-client
+import base64
 
 class LuxLogFilter(logging.Filter):
   def filter(self, record):
@@ -327,42 +329,71 @@ def image_serialize(image):
 # we grab a frame and pass it to the correct algo. Which may be an rpyc proxy
 # these are not called continously - only after movement is detected and
 # then if a deeper check is requested. Then let the state machine deal with the result. 
-
 # we check for the proxy state (!= None)
+
+def ws_check_presence(algo, frame):
+  # this one uses a websocket to the server, gets a json return
+  # Returns T/F
+  global settings, applog
+  ws = websocket.WebSocket()
+  for ip in settings.ml_server_ip:
+    try:
+      uri = f'ws://{ip}:{settings.ws_port}/Cnn_Shapes'
+      ws.connect(uri)
+      _, jpg = cv2.imencode('.jpg',frame)
+      bfr = base64.b64encode(jpg)
+      ws.send(bfr)
+      reply = ws.recv()
+      ws.close()
+      js = json.loads(reply)
+      return js['value']
+    except ConnectionRefusedError:
+      applog.warning('Trying backup ip')
+      continue
+  # here if all servers are unresponsive
+  return False
+  
 def check_presence():
   global settings, ml_dict, frame1, show_windows, backup_ml, applog, have_cuda
   result = False
   time.sleep(0.25)       # one quarter second delay, get a new frame
   read_local_resize()
   mlobj = None
-  try:
-    mlobj = ml_dict.get(settings.ml_algo, None)
-    if mlobj is None:
-      applog.info(f'Setting up rpc for {settings.ml_server_ip}:{settings.ml_port} {settings.ml_algo}')
-      mlobj = Algo(settings.ml_algo, 
-            settings.use_ml == 'remote', 
-            settings.ml_server_ip, 
-            settings.ml_port, 
-            settings.log,
-            have_cuda)
-      ml_dict[settings.ml_algo] = mlobj
-    if settings.use_ml == 'remote':
+  st = datetime.now()
+  if settings.use_ml == 'websocket':
+    result = ws_check_presence(settings.ml_algo, frame1)
+  else:
+    try:
+      mlobj = ml_dict.get(settings.ml_algo, None)
+      if mlobj is None:
+        applog.info(f'Setting up rpc for {settings.ml_server_ip}:{settings.ml_port} {settings.ml_algo}')
+        mlobj = Algo(settings.ml_algo, 
+              settings.use_ml == 'remote', 
+              settings.ml_server_ip, 
+              settings.ml_port, 
+              settings.log,
+              have_cuda)
+        ml_dict[settings.ml_algo] = mlobj
+      if settings.use_ml == 'remote':
+        result, n = mlobj.proxy.root.detectors(settings.ml_algo, False, settings.confidence, image_serialize(frame1))
+      else:
+        result, n = mlobj.proxy(settings.ml_algo, show_windows, settings.confidence, frame1)
+    except (ConnectionRefusedError, EOFError):
+      applog.warning('Failing over to backup')
+      mlobj = backup_ml.get(settings.ml_algo, None)
+      if mlobj is None:
+        applog.info(f'Setting up rpc for {settings.ml_backup_ip}:{settings.ml_port} {settings.ml_algo}')
+        mlobj = Algo(settings.ml_algo,
+                  True, 
+                  settings.ml_backup_ip, 
+                  settings.ml_port, 
+                  settings.log,
+                  have_cuda)
+        backup_ml[settings.ml_algo] = mlobj
       result, n = mlobj.proxy.root.detectors(settings.ml_algo, False, settings.confidence, image_serialize(frame1))
-    else:
-      result, n = mlobj.proxy(settings.ml_algo, show_windows, settings.confidence, frame1)
-  except (ConnectionRefusedError, EOFError):
-    applog.warning('Failing over to backup')
-    mlobj = backup_ml.get(settings.ml_algo, None)
-    if mlobj is None:
-      applog.info(f'Setting up rpc for {settings.ml_backup_ip}:{settings.ml_port} {settings.ml_algo}')
-      mlobj = Algo(settings.ml_algo,
-                True, 
-                settings.ml_backup_ip, 
-                settings.ml_port, 
-                settings.log,
-                have_cuda)
-      backup_ml[settings.ml_algo] = mlobj
-    result, n = mlobj.proxy.root.detectors(settings.ml_algo, False, settings.confidence, image_serialize(frame1))
+  et = datetime.now()
+  el = et - st
+  applog.info(f'elapsed: {el.total_seconds()}')
   return result
   
 # --------- adrian_1 movement detection ----------
@@ -858,24 +889,10 @@ def main(args=None):
   # Rpc proxy's are setup the first time they are needed. 
   have_cuda = is_cuda_cv()
   applog.info(f"Have CUDA: {check_cuda()}")
-  if settings.use_ml != 'remote':
+  if settings.use_ml == 'local':
    applog.info(f"Will use CUDA: {have_cuda}")
    ml_dict = build_ml_dict(False, None, None, applog)
-  '''
-  else:
-    try:
-      ml_dict = build_ml_dict(True, settings.ml_server_ip, 
-          settings.ml_port, applog)
-      applog.info('Using primary ml server');
-      backup_ml = build_ml_dict(True, settings.ml_backup_ip, 
-        settings.ml_port, applog)
-      applog.info('Note secondary ml server');
-    except ConnectionRefusedError:
-     applog.warn('Using backup ML server')
-     ml_dict = build_ml_dict(True, settings.ml_backup_ip, 
-        settings.ml_port, applog)
-  '''    
-  
+   
   cur_state = State.motion_wait
   dimcap = (settings.camera_width, settings.camera_height)
   # Almost Done with setup. Maybe.

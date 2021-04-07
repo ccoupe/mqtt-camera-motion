@@ -26,5 +26,5 @@
   "ml_backup_ip": "192.168.1.2",
   "two_step": false,
   "confidence": 0.4,
-  "use_ml": "remote"
+  "use_ml": "websocket"
 }

@@ -99,15 +99,20 @@ class Settings:
     self.ml_algo = conf.get('ml_algo', None)
     self.confidence = conf.get('confidence', 0.4)
     self.ml_server_ip = conf.get('ml_server_ip', None)
-    self.ml_port = conf.get("ml_port", None)
     self.image_url = "http://%s:7534/camera/snapshot.png" % self.our_IP
     self.mv_algo = conf.get('mv_algo', 'adrian_1')
     self.mv_threshold = conf.get('mv_threshold', 10)
     self.use_ml = conf.get('use_ml', None)
     self.two_step = conf.get('two_step', True)
     self.log_events = conf.get('log_events', False)
-    self.ml_backup_ip = conf.get('ml_backup_ip', '192.168.1.2')
-
+    self.ml_backup_ip = conf.get('ml_backup_ip', '192.168.1.7')
+    # post revisionist clean it forward
+    if type(self.ml_server_ip) != list:
+      self.ml_server_ip = [self.ml_server_ip, self.ml_backup_ip]
+    if self.use_ml == 'websocket':
+      self.ml_port = 4439
+    elif self.use_ml == 'remote':
+      self.ml_port = 5566
 
   def display(self):
     self.log.info("==== Settings ====")
