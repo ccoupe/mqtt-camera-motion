@@ -102,7 +102,7 @@ class Settings:
     self.image_url = "http://%s:7534/camera/snapshot.png" % self.our_IP
     self.mv_algo = conf.get('mv_algo', 'adrian_1')
     self.mv_threshold = conf.get('mv_threshold', 10)
-    self.use_ml = conf.get('use_ml', None)
+    self.use_ml = conf.get('use_ml', 'websocket')
     self.two_step = conf.get('two_step', True)
     self.log_events = conf.get('log_events', False)
     self.ml_backup_ip = conf.get('ml_backup_ip', '192.168.1.7')
@@ -112,7 +112,9 @@ class Settings:
     if self.use_ml == 'websocket':
       self.ml_port = 4439
     elif self.use_ml == 'remote':
-      self.ml_port = 5566
+      self.ml_port = 4466
+    else:
+      self.log.warning('FAILURE IN Settings, use_ml')
 
   def display(self):
     self.log.info("==== Settings ====")

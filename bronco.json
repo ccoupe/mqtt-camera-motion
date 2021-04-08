@@ -20,11 +20,9 @@
   "snapshot": true,
   "mv_algo": "adrian_1",
   "mv_threshold": 10,
-  "ml_server_ip": "192.168.1.4",
-  "ml_port": 4466,
+  "ml_server_ip": ["192.168.1.3","192.168.1.4"],
   "ml_algo": "Cnn_Shapes",
-  "ml_backup_ip": "192.168.1.2",
   "two_step": false,
   "confidence": 0.4,
-  "use_ml": "websocket"
+  "use_ml": "remote"
 }

@@ -338,7 +338,8 @@ def ws_check_presence(algo, frame):
   ws = websocket.WebSocket()
   for ip in settings.ml_server_ip:
     try:
-      uri = f'ws://{ip}:{settings.ws_port}/Cnn_Shapes'
+      uri = f'ws://{ip}:{settings.ml_port}/Cnn_Shapes'
+      print('connecting', uri)
       ws.connect(uri)
       _, jpg = cv2.imencode('.jpg',frame)
       bfr = base64.b64encode(jpg)
@@ -366,10 +367,10 @@ def check_presence():
     try:
       mlobj = ml_dict.get(settings.ml_algo, None)
       if mlobj is None:
-        applog.info(f'Setting up rpc for {settings.ml_server_ip}:{settings.ml_port} {settings.ml_algo}')
+        applog.info(f'Setting up rpc for {settings.ml_server_ip[0]}:{settings.ml_port} {settings.ml_algo}')
         mlobj = Algo(settings.ml_algo, 
               settings.use_ml == 'remote', 
-              settings.ml_server_ip, 
+              settings.ml_server_ip[0], 
               settings.ml_port, 
               settings.log,
               have_cuda)
@@ -382,10 +383,10 @@ def check_presence():
       applog.warning('Failing over to backup')
       mlobj = backup_ml.get(settings.ml_algo, None)
       if mlobj is None:
-        applog.info(f'Setting up rpc for {settings.ml_backup_ip}:{settings.ml_port} {settings.ml_algo}')
+        applog.info(f'Setting up rpc for {settings.ml_server_ip[1]}:{settings.ml_port} {settings.ml_algo}')
         mlobj = Algo(settings.ml_algo,
                   True, 
-                  settings.ml_backup_ip, 
+                  settings.ml_server_ip[1], 
                   settings.ml_port, 
                   settings.log,
                   have_cuda)
@@ -867,8 +868,11 @@ def main(args=None):
     applog.debug("cmd line movement override: %s", settings.mv_algo)
   if args['remote']:
     settings.use_ml = 'remote'
+  '''
   if args['port']:
+    print('override port')
     settings.ml_port = args['port']
+  '''
   if args['debug']:
     show_windows = True
     settings.use_ml = 'local'
