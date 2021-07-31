@@ -19,6 +19,7 @@ class Homie_MQTT:
     self.capture = None         # funtion(json) set by main()
     # init server connection
     self.client = mqtt.Client(settings.mqtt_client_name, False)
+    self.client.reconnect_delay_set(min_delay=1, max_delay=60)
     #self.client.max_queued_messages_set(3)
     hdevice = self.hdevice = self.settings.homie_device  # "device_name"
     hlname = self.hlname = self.settings.homie_name     # "Display Name"
@@ -122,7 +123,7 @@ class Homie_MQTT:
         self.log.warn("Publish_msg() unknown rc: %d", rc)
 
   def on_subscribe(self, client, userdata, mid, granted_qos):
-    self.log.warn("on_subscribe() %s %d %d", str(userdata), int(mid), int(granted_qos))
+    self.log.warn(f"on_subscribe() {userdata}, {mid}, {granted_qos}")
         
   def on_message(self, client, userdata, message):
     global off_hack
@@ -186,10 +187,8 @@ class Homie_MQTT:
     
   def on_disconnect(self, client, userdata, rc):
     self.mqtt_connected = False
-    self.log.info("Disconnected")
-    while not self.mqtt_connected:
-      time.sleep(60)
-      self.log.info("mqtt reconnecting")
+    if rc != 0:
+      self.log.warn(f"mqtt disconnect: {rc}, attempting reconnect")
       self.client.reconnect()
       
   

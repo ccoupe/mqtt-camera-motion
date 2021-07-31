@@ -1,12 +1,11 @@
 {
-  "mqtt_server_ip": "192.168.1.7",
+  "mqtt_server_ip": "stoic.local",
   "mqtt_port": 1883,
   "mqtt_client_name": "touchpi_camera",
-  "topic_publish": "cameras/family/touchpi",
-  "topic_control": "cameras/family/touchpi_control",
   "homie_device": "p3_touch",
   "homie_name": "Pi 3 Touch & Camera",
-  "camera_number": -1,
+  "camera_type": "capture",
+  "camera_number": 0,
   "camera_height": 480,
   "camera_width": 640,
   "camera_warmup": 2.5,
@@ -18,10 +17,13 @@
   "lux_secs": 300,
   "settings_rw": false,
   "snapshot": true,
-  "ml_algo": "shapes",
+  "ml_algo": "Cnn_Shapes",
   "face_frames": 10,
   "confidence": 0.4,
-  "ml_server_ip": "192.168.1.4",
-  "ml_backup_ip": "192.168.1.2",
-  "ml_port": 5566 
+  "ml_server_ip": ["mini.local","bronco.local","nano.local"],
+  "mv_algo": "adrian_1",
+  "mv_threshold": 10,
+  "log_events": true,
+  "use_ml": "websocket",
+  "two_step": false
 }

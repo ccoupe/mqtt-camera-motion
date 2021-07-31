@@ -1,5 +1,5 @@
 {
-  "mqtt_server_ip": "192.168.1.7",
+  "mqtt_server_ip": "stoic.local",
   "mqtt_port": 1883,
   "mqtt_client_name": "bronco_webcam",
   "homie_device": "office_webcam",
@@ -20,9 +20,10 @@
   "snapshot": true,
   "mv_algo": "adrian_1",
   "mv_threshold": 10,
-  "ml_server_ip": ["192.168.1.3","192.168.1.4"],
+  "ml_server_ip": ["bronco.local", "mini.local", "nano.local"],
   "ml_algo": "Cnn_Shapes",
+  "ml_backup_ip": "192.168.1.4",
   "two_step": false,
   "confidence": 0.4,
-  "use_ml": "remote"
+  "use_ml": "websocket"
 }

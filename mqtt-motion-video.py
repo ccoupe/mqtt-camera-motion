@@ -349,7 +349,8 @@ def ws_check_presence(algo, frame):
       js = json.loads(reply)
       return js['value']
     except ConnectionRefusedError:
-      applog.warning('Trying backup ip')
+      applog.warning(f'Trying backup ip for {ip}:{settings.ml_port}')
+      applog.warning(f'{ip} is {socket.gethostbyname(ip)}')
       continue
   # here if all servers are unresponsive
   return False
