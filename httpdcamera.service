@@ -1,9 +1,0 @@
-[Unit]
-Description=Https for Camera
-
-[Service]
-ExecStart=/usr/local/bin/httpdcamera.sh
-Restart=on-abort
-
-[Install]
-WantedBy=multi-user.target
